@@ -43,6 +43,9 @@ that are public and free, and it tells you which source answered.
 | `company_search` | Find a company by name: legal form, status, address, national register number, LEI. Turns a mark holder into a known entity. |
 | `company_detail` | The full GLEIF record for a LEI, plus group structure — direct parent, ultimate parent, subsidiaries. |
 | `vat_check` | Verify an EU VAT number and get the officially registered name and address back. |
+| `eu_company_search` | Search **seven national company registers** by name at once — CZ, SK, FI, FR, NO, DK, EE. |
+| `eu_company_by_number` | Look a company up by its national number (CZ by IČO, PL by NIP/REGON). |
+| `eu_company_sources` | Which countries have a free register, which don't, and why. |
 
 ## Install
 
@@ -144,6 +147,50 @@ The two sources answer different questions, and neither is a company register:
 For a Dutch B.V. with no LEI there is no free, keyless source at all. That needs the KVK
 handelsregister, which requires an account and, for production use, a paid plan.
 
+## National company registers
+
+GLEIF covers only entities that hold a LEI. Most companies do not. So `eu_company_search`
+goes straight to the national registers — the same data, at the source, free and without a
+key. Leave `land` out and it queries all seven concurrently:
+
+```
+eu_company_search("Nordic", max_results: 2)
+  → CZ  Nordic Invest s.r.o.        01582119   Primátorská 296/38, 18000 Praha 8
+    SK  NORDIC-RACE s. r. o.        45954577   Svätoondrejská 11/5, 94501 Komárno
+    FI  …   FR  …   NO  …   DK  …   EE  …
+
+  per_land: { CZ: {in_register: 65, geleverd: 2}, SK: {in_register: 69, geleverd: 2}, … }
+```
+
+That `per_land` field is deliberate. Two of these registers ignore their own limit
+parameter, so the cap is enforced client-side — and the response tells you both what the
+register matched and what you were handed, rather than quietly truncating.
+
+### What is covered
+
+| Country | Register | Identifier | By name | Notes |
+|---|---|---|---|---|
+| **CZ** | ARES (Ministry of Finance) | IČO | ✔ | Also by number; returns VAT number too |
+| **SK** | RPO (Statistical Office) | IČO | ✔ | Name and address history, current entry picked |
+| **FI** | PRH avoindata | Business ID | ✔ | Legal form in English, website |
+| **FR** | recherche-entreprises (INSEE/RNE) | SIREN | ✔ | Includes VAT number |
+| **NO** | Brønnøysund Enhetsregisteret | Org.nr | ✔ | Flags bankruptcy and liquidation |
+| **DK** | CVR via cvrapi.dk | CVR | ✔ | Returns only the single best match |
+| **EE** | Ariregister (RIK) | Registrikood | ✔ | Name and number only, no address |
+| **PL** | VAT register (Ministry of Finance) | NIP / REGON | — | By number only; name search is not offered |
+
+### What is not, and why
+
+Every European country was probed. These have no free keyless register, and
+`eu_company_sources` returns this list with the reason so an empty result is never read as
+"no such company":
+
+AT, BE, BG, CH, CY, DE, ES, GR, HR, HU, IE, IS, IT, LT, LU, LV, MT, NL, PT, RO, SE, SI, UK.
+
+Three of those are worth knowing about specifically. **UK** Companies House is free but
+needs a (free) API key. **CH** Zefix was open and now answers `401`. **NL** needs a paid
+subscription — see the `nl_company_*` tools if you have one.
+
 ## Tool reference
 
 ### `tm_clearance`
@@ -209,6 +256,9 @@ Four public endpoints, no authentication on any of them:
   registration numbers, and the parent/child relationships that make up a group.
 - **EU VIES** (`ec.europa.eu/taxation_customs/vies`) — VAT number validation, returning the
   name and address on file with the national tax authority.
+- **Eight national company registers** — CZ, SK, FI, FR, NO, DK, EE and PL, each queried at
+  its own source and normalised into one shape. Field names are aligned; source coverage is
+  not, so each row names the register it came from.
 
 Three decisions shape every answer:
 
@@ -259,6 +309,10 @@ For most software products, clearing 9 and 42 is the minimum — hence the defau
   UIs. They are free and need no key, and they can change without notice. Be considerate
   with request volume.
 - **Patents are out of scope.** Trademarks only.
+- **National registers differ in freshness and depth.** The fields are normalised, the
+  coverage is not. Estonia returns no address, Denmark returns one match rather than a list,
+  and each register updates on its own schedule. A hit in one country says nothing about
+  another.
 
 ## Development
 
