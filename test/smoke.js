@@ -45,6 +45,33 @@ const payload = (r) => {
   try { return JSON.parse(r.result.content[0].text); } catch { return {}; }
 };
 
+/** Paid tools must refuse loudly when unconfigured — run with the env stripped. */
+function configGuard() {
+  return new Promise((resolve) => {
+    const env = { ...process.env };
+    delete env.COMPANYINFO_USERNAME;
+    delete env.COMPANYINFO_PASSWORD;
+    const p = spawn(process.execPath, [server], { stdio: ['pipe', 'pipe', 'inherit'], env });
+    let out = '';
+    p.stdout.on('data', (c) => { out += c; });
+    p.stdin.write(JSON.stringify({
+      jsonrpc: '2.0', id: 1, method: 'tools/call',
+      params: { name: 'nl_company_search', arguments: { naam: 'Test' } },
+    }) + '\n');
+    p.stdin.end();
+    p.on('close', () => {
+      let ok = false;
+      try {
+        const d = JSON.parse(out.trim().split('\n')[0]);
+        const txt = d.result?.content?.[0]?.text || '';
+        ok = d.result?.isError === true && txt.includes('COMPANYINFO_USERNAME');
+      } catch { /* ok stays false */ }
+      console.log(`${ok ? 'ok  ' : 'FAIL'}  11  nl_company_search refuses when unconfigured`);
+      resolve(ok);
+    });
+  });
+}
+
 const proc = spawn(process.execPath, [server], { stdio: ['pipe', 'pipe', 'inherit'] });
 const seen = new Map();
 let buf = '';
@@ -63,7 +90,7 @@ proc.stdout.on('data', (c) => {
 for (const r of REQS) proc.stdin.write(JSON.stringify({ jsonrpc: '2.0', ...r }) + '\n');
 proc.stdin.end();
 
-proc.on('close', () => {
+proc.on('close', async () => {
   let failed = 0;
   for (const r of REQS) {
     const got = seen.get(r.id);
@@ -74,6 +101,8 @@ proc.on('close', () => {
     if (!ok) failed++;
     console.log(`${ok ? 'ok  ' : 'FAIL'}  ${r.id}  ${name}`);
   }
-  console.log(failed ? `\n${failed} of ${REQS.length} failed` : `\nall ${REQS.length} passed`);
+  if (!(await configGuard())) failed++;
+  const total = REQS.length + 1;
+  console.log(failed ? `\n${failed} of ${total} failed` : `\nall ${total} passed`);
   process.exit(failed ? 1 : 0);
 });

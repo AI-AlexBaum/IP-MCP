@@ -46,6 +46,13 @@ that are public and free, and it tells you which source answered.
 | `eu_company_search` | Search **seven national company registers** by name at once — CZ, SK, FI, FR, NO, DK, EE. |
 | `eu_company_by_number` | Look a company up by its national number (CZ by IČO, PL by NIP/REGON). |
 | `eu_company_sources` | Which countries have a free register, which don't, and why. |
+| `nl_company_search` ᵖ | Find a Dutch company in the Handelsregister by trade name, city, postcode or domain — including the SMEs GLEIF misses. |
+| `nl_company_profile` ᵖ | Full Handelsregister profile: legal name, **all trade names**, legal form, RSIN, addresses. |
+| `nl_company_vat` ᵖ | The VAT number for a KVK number — feed it to `vat_check` to confirm the name for free. |
+| `nl_company_tree` ᵖ | Group structure for a KVK number: parents, subsidiaries and UBO. |
+
+ᵖ = optional, **paid**, and off unless you configure credentials. Everything above the line
+is free and needs no setup.
 
 ## Install
 
@@ -240,6 +247,30 @@ relationships where **both** entities hold a LEI are visible.
 | `btw_nummer` | string | *required* | With country code, e.g. `NL123456789B01` |
 | `land` | string | — | Country code, if it is not part of `btw_nummer` |
 
+### `nl_company_search` (paid)
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `naam` | string | — | Trade name or part of it |
+| `plaats` | string | — | City |
+| `postcode` | string | — | Postcode |
+| `domein` | string | — | Domain name, e.g. `example.nl` |
+| `dossiernummer` | string | — | KVK number, if you already have it |
+| `strikt` | boolean | `false` | Exact rather than partial match |
+| `pagina` | int | `1` | 20 results per page; the service caps totals at 500 |
+
+At least one of `naam`, `dossiernummer` or `domein` is required.
+
+### `nl_company_profile` (paid)
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `dossiernummer` | string | *required* | 8-digit KVK number |
+| `vestigingsnummer` | string | — | For one specific establishment |
+
+### `nl_company_vat` / `nl_company_tree` (paid)
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `dossiernummer` | string | *required* | 8-digit KVK number |
+
 Country codes are validated before the call, so a typo fails locally instead of returning a
 meaningless *invalid*. Greece is accepted as either `GR` or `EL`.
 
@@ -259,6 +290,12 @@ Four public endpoints, no authentication on any of them:
 - **Eight national company registers** — CZ, SK, FI, FR, NO, DK, EE and PL, each queried at
   its own source and normalised into one shape. Field names are aligned; source coverage is
   not, so each row names the register it came from.
+
+One optional paid source, used only if you configure it:
+
+- **Company.info / Webservices.nl** (`ws1.webservices.nl`) — the Dutch Handelsregister over
+  SOAP. Reached with a hand-built envelope and a small XML parser, so the server keeps its
+  zero-dependency promise.
 
 Three decisions shape every answer:
 

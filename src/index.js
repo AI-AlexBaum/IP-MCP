@@ -9,6 +9,9 @@
  *   EU VIES (VAT verification)         https://ec.europa.eu/taxation_customs/vies/rest-api
  *   National company registers        8 countries, see EU_REGISTERS below
  *
+ * Optional, paid, credentials via environment only (never committed):
+ *   Company.info / Webservices.nl      Dutch Handelsregister — see README
+ *
  * No API keys, no subscription, no per-call billing.
  * Protocol: MCP over stdio, JSON-RPC 2.0. No dependencies.
  */
