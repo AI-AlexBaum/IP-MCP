@@ -595,39 +595,39 @@ const EU_REGISTERS = {
     async byName(q, n) {
       const d = await http('https://ares.gov.cz/ekonomicke-subjekty-v-be/rest/ekonomicke-subjekty/vyhledat',
         { body: JSON.stringify({ obchodniJmeno: q, pocet: Math.min(n, 100) }) });
-      return { totaal: d.pocetCelkem ?? 0, rows: arr(d.ekonomickeSubjekty).map(czRow) };
+      return { total: d.pocetCelkem ?? 0, rows: arr(d.ekonomickeSubjekty).map(czRow) };
     },
     async byNumber(id) {
       const d = await http(`https://ares.gov.cz/ekonomicke-subjekty-v-be/rest/ekonomicke-subjekty/${encodeURIComponent(id)}`);
-      return { totaal: 1, rows: [czRow(d)] };
+      return { total: 1, rows: [czRow(d)] };
     },
   },
   SK: {
     country_name: 'Slovakia', register: 'RPO (Statistical Office)', id: 'ICO',
     async byName(q, n) {
       const d = await http(`https://api.statistics.sk/rpo/v1/search?fullName=${encodeURIComponent(q)}&limit=${Math.min(n, 100)}`);
-      return { totaal: arr(d.results).length, rows: arr(d.results).map(skRow) };
+      return { total: arr(d.results).length, rows: arr(d.results).map(skRow) };
     },
   },
   FI: {
     country_name: 'Finland', register: 'PRH avoindata', id: 'Business ID',
     async byName(q, n) {
       const d = await http(`https://avoindata.prh.fi/opendata-ytj-api/v3/companies?name=${encodeURIComponent(q)}`);
-      return { totaal: d.totalResults ?? arr(d.companies).length, rows: arr(d.companies).slice(0, n).map(fiRow) };
+      return { total: d.totalResults ?? arr(d.companies).length, rows: arr(d.companies).slice(0, n).map(fiRow) };
     },
   },
   FR: {
     country_name: 'France', register: 'recherche-entreprises (INSEE/RNE)', id: 'SIREN',
     async byName(q, n) {
       const d = await http(`https://recherche-entreprises.api.gouv.fr/search?q=${encodeURIComponent(q)}&per_page=${Math.min(n, 25)}`);
-      return { totaal: d.total_results ?? arr(d.results).length, rows: arr(d.results).map(frRow) };
+      return { total: d.total_results ?? arr(d.results).length, rows: arr(d.results).map(frRow) };
     },
   },
   NO: {
     country_name: 'Norway', register: 'Bronnoysund Enhetsregisteret', id: 'Organisasjonsnummer',
     async byName(q, n) {
       const d = await http(`https://data.brreg.no/enhetsregisteret/api/enheter?navn=${encodeURIComponent(q)}&size=${Math.min(n, 100)}`);
-      return { totaal: d.page?.totalElements ?? 0, rows: arr(d._embedded?.enheter).map(noRow) };
+      return { total: d.page?.totalElements ?? 0, rows: arr(d._embedded?.enheter).map(noRow) };
     },
   },
   DK: {
@@ -636,7 +636,7 @@ const EU_REGISTERS = {
     async byName(q) {
       const d = await http(`https://cvrapi.dk/api?search=${encodeURIComponent(q)}&country=dk`,
         { headers: { 'User-Agent': APP_UA } });
-      return { totaal: d?.vat ? 1 : 0, rows: d?.vat ? [dkRow(d)] : [] };
+      return { total: d?.vat ? 1 : 0, rows: d?.vat ? [dkRow(d)] : [] };
     },
   },
   EE: {
@@ -644,7 +644,7 @@ const EU_REGISTERS = {
     note: 'This source returns name and registration number, no address.',
     async byName(q, n) {
       const d = await http(`https://ariregister.rik.ee/est/api/autocomplete?q=${encodeURIComponent(q)}&results=${Math.min(n, 50)}`);
-      return { totaal: arr(d.data).length, rows: arr(d.data).map(eeRow) };
+      return { total: arr(d.data).length, rows: arr(d.data).map(eeRow) };
     },
   },
   PL: {
@@ -654,7 +654,7 @@ const EU_REGISTERS = {
       const kind = id.replace(/\D/g, '').length === 9 ? 'regon' : 'nip';
       const d = await http(`https://wl-api.mf.gov.pl/api/search/${kind}/${encodeURIComponent(id.replace(/\D/g, ''))}?date=${today()}`);
       const su = d.result?.subject;
-      return { totaal: su ? 1 : 0, rows: su ? [plRow(su)] : [] };
+      return { total: su ? 1 : 0, rows: su ? [plRow(su)] : [] };
     },
   },
 };
@@ -789,9 +789,9 @@ async function tEuSearch(a) {
 
   const settled = await Promise.all(searchable.map(async (cc) => {
     try {
-      const { totaal: total, rows } = await EU_REGISTERS[cc].byName(q, n);
+      const { total, rows } = await EU_REGISTERS[cc].byName(q, n);
       // Some registers ignore their own limit parameter (SK, EE), so the cap is
-      // enforced here as well. totaal still reports what the source matched.
+      // enforced here as well. `total` still reports what the source matched.
       return { cc, total, rows: rows.slice(0, n), truncated: Math.max(0, rows.length - n) };
     } catch (e) {
       return { cc, error: e?.message || String(e) };
