@@ -1,6 +1,6 @@
 {
   "name": "ip-free-mcp",
-  "version": "1.3.0",
+  "version": "1.5.0",
   "description": "MCP server for EU and Benelux trademark research over free, public sources. No API keys, no subscription, no per-call billing.",
   "type": "module",
   "bin": {
