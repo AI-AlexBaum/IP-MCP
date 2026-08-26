@@ -12,6 +12,9 @@
  * Optional, paid, credentials via environment only (never committed):
  *   Company.info / Webservices.nl      Dutch Handelsregister — see README
  *
+ * Optional, paid, credentials via environment only (never committed):
+ *   Company.info / Webservices.nl      Dutch Handelsregister — see README
+ *
  * No API keys, no subscription, no per-call billing.
  * Protocol: MCP over stdio, JSON-RPC 2.0. No dependencies.
  */

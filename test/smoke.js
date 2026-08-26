@@ -74,6 +74,33 @@ function configGuard() {
   });
 }
 
+/** Paid tools must refuse loudly when unconfigured — run with the env stripped. */
+function configGuard() {
+  return new Promise((resolve) => {
+    const env = { ...process.env };
+    delete env.COMPANYINFO_USERNAME;
+    delete env.COMPANYINFO_PASSWORD;
+    const p = spawn(process.execPath, [server], { stdio: ['pipe', 'pipe', 'inherit'], env });
+    let out = '';
+    p.stdout.on('data', (c) => { out += c; });
+    p.stdin.write(JSON.stringify({
+      jsonrpc: '2.0', id: 1, method: 'tools/call',
+      params: { name: 'nl_company_search', arguments: { naam: 'Test' } },
+    }) + '\n');
+    p.stdin.end();
+    p.on('close', () => {
+      let ok = false;
+      try {
+        const d = JSON.parse(out.trim().split('\n')[0]);
+        const txt = d.result?.content?.[0]?.text || '';
+        ok = d.result?.isError === true && txt.includes('COMPANYINFO_USERNAME');
+      } catch { /* ok stays false */ }
+      console.log(`${ok ? 'ok  ' : 'FAIL'}  11  nl_company_search refuses when unconfigured`);
+      resolve(ok);
+    });
+  });
+}
+
 const proc = spawn(process.execPath, [server], { stdio: ['pipe', 'pipe', 'inherit'] });
 const seen = new Map();
 let buf = '';
