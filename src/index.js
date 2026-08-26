@@ -8,13 +8,16 @@
  *   GLEIF (company identity, groups)   https://api.gleif.org/api/v1
  *   EU VIES (VAT verification)         https://ec.europa.eu/taxation_customs/vies/rest-api
  *
+ * Optional, paid, credentials via environment only (never committed):
+ *   Company.info / Webservices.nl      Dutch Handelsregister — see README
+ *
  * No API keys, no subscription, no per-call billing.
  * Protocol: MCP over stdio, JSON-RPC 2.0. No dependencies.
  */
 
 const PROTOCOL = '2025-06-18';
 const NAME = 'ip-free-mcp';
-const VERSION = '1.2.0';
+const VERSION = '1.3.0';
 
 const UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
@@ -353,6 +356,219 @@ async function tVatCheck(a) {
   };
 }
 
+
+/* ------------------------------------------------------------------ *
+ * Dutch Handelsregister via Company.info (Webservices.nl SOAP).
+ *
+ * OPTIONAL and PAID. Credentials come from the environment only:
+ *   COMPANYINFO_USERNAME, COMPANYINFO_PASSWORD, COMPANYINFO_WSDL_URL
+ * Never hardcode them — this repository is public. Without them the
+ * tools stay listed and explain what to set instead of failing quietly.
+ * ------------------------------------------------------------------ */
+
+const CI_ENDPOINT_DEFAULT = 'https://ws1.webservices.nl/soap_doclit.php';
+const CI_NS = 'http://www.webservices.nl/soap/';
+
+function ciConfig() {
+  const user = process.env.COMPANYINFO_USERNAME;
+  const pass = process.env.COMPANYINFO_PASSWORD;
+  if (!user || !pass) {
+    throw new Error(
+      'Company.info is niet geconfigureerd. Zet COMPANYINFO_USERNAME en ' +
+      'COMPANYINFO_PASSWORD in de omgeving van de MCP-server (optioneel ' +
+      'COMPANYINFO_WSDL_URL). Dit is een betaalde dienst; de overige tools van ' +
+      'deze server werken zonder.');
+  }
+  let url = process.env.COMPANYINFO_WSDL_URL || CI_ENDPOINT_DEFAULT;
+  url = url.replace(/\?wsdl$/i, '');
+  return { user, pass, url };
+}
+
+const XML_ENT = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
+const xmlDecode = (t) =>
+  t.replace(/&(#x?[0-9a-fA-F]+|[a-z]+);/g, (m, e) => {
+    if (e[0] === '#') return String.fromCodePoint(parseInt(e[1] === 'x' ? e.slice(2) : e.slice(1), e[1] === 'x' ? 16 : 10));
+    return XML_ENT[e] ?? m;
+  });
+const xmlEscape = (t) =>
+  String(t).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[c]));
+
+/**
+ * Minimal XML -> plain object. Namespace prefixes are dropped; a tag that
+ * repeats becomes an array. Leaf elements become their decoded text.
+ */
+function xmlToObj(xml) {
+  const root = { kids: {}, text: '' };
+  const stack = [root];
+  const local = (n) => (n.includes(':') ? n.split(':').pop() : n);
+  const attach = (node, name) => {
+    const parent = stack[stack.length - 1];
+    const value = Object.keys(node.kids).length ? node.kids : xmlDecode(node.text).trim();
+    const key = local(name);
+    if (key in parent.kids) {
+      if (!Array.isArray(parent.kids[key])) parent.kids[key] = [parent.kids[key]];
+      parent.kids[key].push(value);
+    } else {
+      parent.kids[key] = value;
+    }
+  };
+  const re = /<!--[\s\S]*?-->|<\?[\s\S]*?\?>|<(\/?)([A-Za-z_][\w.:-]*)((?:"[^"]*"|'[^']*'|[^>"'])*?)(\/?)>|([^<]+)/g;
+  let m;
+  while ((m = re.exec(xml)) !== null) {
+    const [, close, name, , selfClose, text] = m;
+    if (text !== undefined) { stack[stack.length - 1].text += text; continue; }
+    if (!name) continue;                                  // comment or declaration
+    if (close) { attach(stack.pop(), name); continue; }
+    if (selfClose) { attach({ kids: {}, text: '' }, name); continue; }
+    stack.push({ kids: {}, text: '' });
+  }
+  return root.kids;
+}
+
+/** Always give me a list, whether the parser saw one item or many. */
+const arr = (v) => (v == null || v === '' ? [] : Array.isArray(v) ? v : [v]);
+
+async function soapCall(op, fields) {
+  const { user, pass, url } = ciConfig();
+  const inner = Object.entries(fields)
+    .map(([k, v]) => `<tns:${k}>${xmlEscape(v ?? '')}</tns:${k}>`).join('');
+  const envelope =
+    '<?xml version="1.0" encoding="UTF-8"?>' +
+    `<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" xmlns:tns="${CI_NS}">` +
+    `<soap:Header><tns:HeaderLogin><tns:username>${xmlEscape(user)}</tns:username>` +
+    `<tns:password>${xmlEscape(pass)}</tns:password></tns:HeaderLogin></soap:Header>` +
+    `<soap:Body><tns:${op}>${inner}</tns:${op}></soap:Body></soap:Envelope>`;
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'text/xml; charset=utf-8',
+      SOAPAction: `https://ws1.webservices.nl/soap_doclit.php/${op}`,
+      'User-Agent': `${NAME}/${VERSION}`,
+    },
+    body: envelope,
+    signal: AbortSignal.timeout(90_000),
+  });
+  const body = await res.text();
+  const fault = /<faultstring>([\s\S]*?)<\/faultstring>/.exec(body);
+  if (fault) throw new Error(`Company.info: ${xmlDecode(fault[1]).trim()}`);
+  if (!res.ok) throw new Error(`Company.info: HTTP ${res.status}`);
+
+  const parsed = xmlToObj(body);
+  const out = parsed?.Envelope?.Body?.[`${op}Response`]?.out;
+  if (out === undefined) throw new Error(`Company.info: onverwacht antwoord op ${op}`);
+  return out;
+}
+
+const CI_SOURCE = 'Company.info / Webservices.nl (Handelsregister) - BETAALD, per bevraging';
+
+async function tNlSearch(a) {
+  const naam = (a.naam || '').trim();
+  if (!naam && !a.dossiernummer && !a.domein) {
+    throw new Error('geef naam, dossiernummer of domein op');
+  }
+  const out = await soapCall('dutchBusinessSearch', {
+    dossier_number: a.dossiernummer || '',
+    trade_name: naam,
+    city: a.plaats || '',
+    street: '',
+    postcode: a.postcode || '',
+    house_number: 0,
+    house_number_addition: '',
+    telephone_number: '',
+    domain_name: a.domein || '',
+    strict_search: a.strikt === true,
+    page: Number(a.pagina) || 1,
+  });
+  const paging = out.paging || {};
+  return {
+    zoekterm: naam || a.dossiernummer || a.domein,
+    treffers_totaal: Number(paging.numresults) || 0,
+    pagina: `${paging.curpage || 1} van ${paging.numpages || 1}`,
+    resultaten: arr(out.results?.item).map((x) => ({
+      dossiernummer: x.dossier_number ?? null,
+      vestigingsnummer: x.establishment_number ?? null,
+      statutaire_naam: x.legal_name ?? null,
+      handelsnaam: x.trade_name ?? null,
+      match_op: x.match_type ?? null,
+      plaats: x.establishment_city ?? null,
+      straat: x.establishment_street ?? null,
+      hoofdvestiging: x.indication_main_establishment === 'true',
+    })),
+    bron: CI_SOURCE,
+  };
+}
+
+async function tNlProfile(a) {
+  const nr = String(a.dossiernummer || '').replace(/\D/g, '');
+  if (!nr) throw new Error('dossiernummer is verplicht (KVK-nummer, 8 cijfers)');
+  const o = await soapCall('dutchBusinessGetDossierV3', {
+    dossier_number: nr,
+    establishment_number: a.vestigingsnummer || '',
+  });
+  const addr = (x) => {
+    const f = x?.official || x?.original || x || {};
+    return [
+      [f.street, f.house_number, f.house_number_addition].filter(Boolean).join(' '),
+      f.postcode, f.city, f.country,
+    ].filter(Boolean).join(', ') || null;
+  };
+  return {
+    dossiernummer: o.dossier_number ?? null,
+    vestigingsnummer: o.establishment_number ?? null,
+    hoofdvestiging: o.indication_main_establishment === 'true',
+    statutaire_naam: o.legal_name ?? null,
+    handelsnaam: o.trade_name_full ?? o.trade_name_45 ?? null,
+    alle_handelsnamen: arr(o.trade_names?.item),
+    rechtsvorm: o.legal_form_text ?? null,
+    rechtsvorm_code: o.legal_form_code ?? null,
+    rsin: o.rsin_number ?? null,
+    vestigingsadres: addr(o.establishment_address),
+    correspondentieadres: addr(o.correspondence_address),
+    laatst_bijgewerkt: o.update_info?.date_last_update ?? null,
+    let_op:
+      'Handelsnamen zijn hier relevant voor merkenwerk: in Nederland ontstaat ' +
+      'handelsnaamrecht door gebruik, zonder registratie. Zie alle_handelsnamen.',
+    bron: CI_SOURCE,
+  };
+}
+
+async function tNlVat(a) {
+  const nr = String(a.dossiernummer || '').replace(/\D/g, '');
+  if (!nr) throw new Error('dossiernummer is verplicht');
+  const o = await soapCall('dutchBusinessGetVatNumber', { dossier_number: nr });
+  return {
+    dossiernummer: o.dossier_number ?? null,
+    btw_nummer: o.vat_number || null,
+    laatst_bijgewerkt: o.date_last_update ?? null,
+    tip: 'Voer dit nummer in vat_check om de naam gratis bij EU VIES te verifieren.',
+    bron: CI_SOURCE,
+  };
+}
+
+async function tNlTree(a) {
+  const nr = String(a.dossiernummer || '').replace(/\D/g, '');
+  if (!nr) throw new Error('dossiernummer is verplicht');
+  const o = await soapCall('dutchBusinessGetOrganizationTree', { dossier_number: nr });
+  const walk = (node) => ({
+    naam: node.name ?? null,
+    soort: node.type ?? null,
+    dossiernummer: /^\d+$/.test(String(node.id || '')) ? node.id : null,
+    id: node.id ?? null,
+    onder: arr(node.children?.item).map(walk),
+  });
+  const top = o.tree ? walk(o.tree) : null;
+  return {
+    gevraagd_voor: { naam: o.name ?? null, dossiernummer: o.dossier_number ?? null },
+    concern: top,
+    let_op:
+      'Deze boom kan namen van natuurlijke personen bevatten (UBO, bestuurders). ' +
+      'Dat zijn persoonsgegevens: behandel ze onder de AVG en deel ze niet breder ' +
+      'dan nodig.',
+    bron: CI_SOURCE,
+  };
+}
+
 const TOOLS = [
   {
     name: 'tm_clearance',
@@ -452,12 +668,71 @@ const TOOLS = [
       required: ['btw_nummer'],
     },
   },
+  {
+    name: 'nl_company_search',
+    description:
+      'Zoek een Nederlands bedrijf in het Handelsregister op handelsnaam, plaats, ' +
+      'postcode of domeinnaam, en krijg het KVK-dossiernummer terug. Dekt ook MKB dat ' +
+      'niet in GLEIF staat. BETAALD: vereist Company.info-credentials in de omgeving.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        naam: { type: 'string', description: 'Handelsnaam of deel daarvan' },
+        plaats: { type: 'string' },
+        postcode: { type: 'string' },
+        domein: { type: 'string', description: 'Domeinnaam, bijv. voorbeeld.nl' },
+        dossiernummer: { type: 'string', description: 'KVK-nummer, als je dat al hebt' },
+        strikt: { type: 'boolean', description: 'Exacte match in plaats van deelmatch' },
+        pagina: { type: 'integer', description: 'Standaard 1, 20 resultaten per pagina' },
+      },
+    },
+  },
+  {
+    name: 'nl_company_profile',
+    description:
+      'Volledig Handelsregister-profiel bij een KVK-nummer: statutaire naam, alle ' +
+      'handelsnamen, rechtsvorm, RSIN en adressen. De handelsnamen zijn voor ' +
+      'merkenwerk het belangrijkste veld. BETAALD.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        dossiernummer: { type: 'string', description: 'KVK-nummer van 8 cijfers' },
+        vestigingsnummer: { type: 'string', description: 'Optioneel, voor een specifieke vestiging' },
+      },
+      required: ['dossiernummer'],
+    },
+  },
+  {
+    name: 'nl_company_vat',
+    description:
+      'Btw-nummer bij een KVK-nummer. Combineer met vat_check om de naam gratis bij ' +
+      'EU VIES te verifieren. BETAALD.',
+    inputSchema: {
+      type: 'object',
+      properties: { dossiernummer: { type: 'string' } },
+      required: ['dossiernummer'],
+    },
+  },
+  {
+    name: 'nl_company_tree',
+    description:
+      'Concernstructuur bij een KVK-nummer: moeders, dochters en UBO als boom. Waar ' +
+      'GLEIF stopt omdat een entiteit geen LEI heeft, gaat dit door. LET OP: bevat ' +
+      'persoonsgegevens. BETAALD.',
+    inputSchema: {
+      type: 'object',
+      properties: { dossiernummer: { type: 'string' } },
+      required: ['dossiernummer'],
+    },
+  },
 ];
 
 const HANDLERS = {
   tm_search: tSearch, tm_detail: tDetail,
   tm_clearance: tClearance, tm_offices: tOffices,
   company_search: tCompanySearch, company_detail: tCompanyDetail, vat_check: tVatCheck,
+  nl_company_search: tNlSearch, nl_company_profile: tNlProfile,
+  nl_company_vat: tNlVat, nl_company_tree: tNlTree,
 };
 
 const send = (msg) => process.stdout.write(JSON.stringify(msg) + '\n');
