@@ -43,6 +43,9 @@ that are public and free, and it tells you which source answered.
 | `company_search` | Find a company by name: legal form, status, address, national register number, LEI. Turns a mark holder into a known entity. |
 | `company_detail` | The full GLEIF record for a LEI, plus group structure — direct parent, ultimate parent, subsidiaries. |
 | `vat_check` | Verify an EU VAT number and get the officially registered name and address back. |
+| `eu_company_search` | Search **seven national company registers** by name at once — CZ, SK, FI, FR, NO, DK, EE. |
+| `eu_company_by_number` | Look a company up by its national number (CZ by IČO, PL by NIP/REGON). |
+| `eu_company_sources` | Which countries have a free register, which don't, and why. |
 | `nl_company_search` ᵖ | Find a Dutch company in the Handelsregister by trade name, city, postcode or domain — including the SMEs GLEIF misses. |
 | `nl_company_profile` ᵖ | Full Handelsregister profile: legal name, **all trade names**, legal form, RSIN, addresses. |
 | `nl_company_vat` ᵖ | The VAT number for a KVK number — feed it to `vat_check` to confirm the name for free. |
@@ -151,57 +154,49 @@ The two sources answer different questions, and neither is a company register:
 For a Dutch B.V. with no LEI there is no free, keyless source at all. That needs the KVK
 handelsregister, which requires an account and, for production use, a paid plan.
 
-## Dutch companies (optional, paid)
+## National company registers
 
-GLEIF stops at entities that hold a LEI, which leaves out most Dutch B.V.s. The four
-`nl_company_*` tools close that gap through **Company.info** (Webservices.nl), a commercial
-Handelsregister reseller. They are billed per query, so they stay disabled until you supply
-credentials — and they are listed either way, so the assistant can tell you what to set
-rather than silently returning nothing.
-
-Configure them in your MCP client, never in this repository:
-
-```json
-{
-  "mcpServers": {
-    "ip-free": {
-      "command": "npx",
-      "args": ["-y", "github:AI-AlexBaum/IP-MCP"],
-      "env": {
-        "COMPANYINFO_USERNAME": "your-user",
-        "COMPANYINFO_PASSWORD": "your-password",
-        "COMPANYINFO_WSDL_URL": "https://ws1.webservices.nl/soap_doclit"
-      }
-    }
-  }
-}
-```
-
-`COMPANYINFO_WSDL_URL` is optional and defaults to
-`https://ws1.webservices.nl/soap_doclit.php`; a trailing `?wsdl` is stripped for you.
-
-Called without credentials, every one of these tools returns an explicit *not configured*
-error naming the variables to set. It never degrades into an empty result.
-
-**The chain that makes this worth it:**
+GLEIF covers only entities that hold a LEI. Most companies do not. So `eu_company_search`
+goes straight to the national registers — the same data, at the source, free and without a
+key. Leave `land` out and it queries all seven concurrently:
 
 ```
-tm_clearance("SomeName")        → holder: Some Holding B.V.        (free)
-nl_company_search("Some Holding") → KVK 12345678                    (paid, €)
-nl_company_profile("12345678")  → all trade names, legal form, RSIN (paid, €)
-nl_company_vat("12345678")      → NL123456789B01                    (paid, €)
-vat_check("NL123456789B01")     → confirms name and address          (free)
-nl_company_tree("12345678")     → who owns whom                      (paid, €)
+eu_company_search("Nordic", max_results: 2)
+  → CZ  Nordic Invest s.r.o.        01582119   Primátorská 296/38, 18000 Praha 8
+    SK  NORDIC-RACE s. r. o.        45954577   Svätoondrejská 11/5, 94501 Komárno
+    FI  …   FR  …   NO  …   DK  …   EE  …
+
+  per_land: { CZ: {in_register: 65, geleverd: 2}, SK: {in_register: 69, geleverd: 2}, … }
 ```
 
-`nl_company_profile` returns `alle_handelsnamen`, and for trademark work that is the field
-that matters most: in the Netherlands a trade name right arises from **use**, with no
-registration to search. It is the one right a register sweep cannot find, and this is the
-closest you get to it.
+That `per_land` field is deliberate. Two of these registers ignore their own limit
+parameter, so the cap is enforced client-side — and the response tells you both what the
+register matched and what you were handed, rather than quietly truncating.
 
-> **Privacy.** `nl_company_tree` returns names of natural persons — UBOs and directors.
-> That is personal data under the GDPR. Do not pass it on more widely than the task needs,
-> and do not paste it into anything public.
+### What is covered
+
+| Country | Register | Identifier | By name | Notes |
+|---|---|---|---|---|
+| **CZ** | ARES (Ministry of Finance) | IČO | ✔ | Also by number; returns VAT number too |
+| **SK** | RPO (Statistical Office) | IČO | ✔ | Name and address history, current entry picked |
+| **FI** | PRH avoindata | Business ID | ✔ | Legal form in English, website |
+| **FR** | recherche-entreprises (INSEE/RNE) | SIREN | ✔ | Includes VAT number |
+| **NO** | Brønnøysund Enhetsregisteret | Org.nr | ✔ | Flags bankruptcy and liquidation |
+| **DK** | CVR via cvrapi.dk | CVR | ✔ | Returns only the single best match |
+| **EE** | Ariregister (RIK) | Registrikood | ✔ | Name and number only, no address |
+| **PL** | VAT register (Ministry of Finance) | NIP / REGON | — | By number only; name search is not offered |
+
+### What is not, and why
+
+Every European country was probed. These have no free keyless register, and
+`eu_company_sources` returns this list with the reason so an empty result is never read as
+"no such company":
+
+AT, BE, BG, CH, CY, DE, ES, GR, HR, HU, IE, IS, IT, LT, LU, LV, MT, NL, PT, RO, SE, SI, UK.
+
+Three of those are worth knowing about specifically. **UK** Companies House is free but
+needs a (free) API key. **CH** Zefix was open and now answers `401`. **NL** needs a paid
+subscription — see the `nl_company_*` tools if you have one.
 
 ## Tool reference
 
@@ -292,6 +287,9 @@ Four public endpoints, no authentication on any of them:
   registration numbers, and the parent/child relationships that make up a group.
 - **EU VIES** (`ec.europa.eu/taxation_customs/vies`) — VAT number validation, returning the
   name and address on file with the national tax authority.
+- **Eight national company registers** — CZ, SK, FI, FR, NO, DK, EE and PL, each queried at
+  its own source and normalised into one shape. Field names are aligned; source coverage is
+  not, so each row names the register it came from.
 
 One optional paid source, used only if you configure it:
 
@@ -348,9 +346,10 @@ For most software products, clearing 9 and 42 is the minimum — hence the defau
   UIs. They are free and need no key, and they can change without notice. Be considerate
   with request volume.
 - **Patents are out of scope.** Trademarks only.
-- **The paid tools cost money per call.** Each `nl_company_*` invocation is a billed query.
-  They are deliberately separate tools rather than one fat call, so every charge is a
-  decision you made.
+- **National registers differ in freshness and depth.** The fields are normalised, the
+  coverage is not. Estonia returns no address, Denmark returns one match rather than a list,
+  and each register updates on its own schedule. A hit in one country says nothing about
+  another.
 
 ## Development
 
