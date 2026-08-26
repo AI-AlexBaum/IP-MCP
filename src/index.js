@@ -7,7 +7,10 @@
  *   EUIPO eSearch (full case file)     https://euipo.europa.eu/copla/trademark/data/{nr}
  *   GLEIF (company identity, groups)   https://api.gleif.org/api/v1
  *   EU VIES (VAT verification)         https://ec.europa.eu/taxation_customs/vies/rest-api
- *   National company registers        8 countries, see EU_REGISTERS below
+ *   National registers (8 countries)   see EU_REGISTERS below
+ *
+ * Optional, paid, credentials via environment only (never committed):
+ *   Company.info / Webservices.nl      Dutch Handelsregister — see README
  *
  * Optional, paid, credentials via environment only (never committed):
  *   Company.info / Webservices.nl      Dutch Handelsregister — see README
@@ -18,23 +21,23 @@
 
 const PROTOCOL = '2025-06-18';
 const NAME = 'ip-free-mcp';
-const VERSION = '1.4.0';
+const VERSION = '1.5.0';
 
 const UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
   '(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
 
 const OFFICES = {
-  EM: 'EU (EUIPO)', BX: 'Benelux (NL/BE/LU)', AT: 'Oostenrijk', BG: 'Bulgarije',
-  CY: 'Cyprus', CZ: 'Tsjechie', DE: 'Duitsland', DK: 'Denemarken', EE: 'Estland',
-  ES: 'Spanje', FI: 'Finland', FR: 'Frankrijk', GB: 'VK', GR: 'Griekenland',
-  HR: 'Kroatie', HU: 'Hongarije', IE: 'Ierland', IT: 'Italie', LT: 'Litouwen',
-  LV: 'Letland', MT: 'Malta', PL: 'Polen', PT: 'Portugal', RO: 'Roemenie',
-  SE: 'Zweden', SI: 'Slovenie', SK: 'Slowakije', NO: 'Noorwegen', IS: 'IJsland',
-  CH: 'Zwitserland', TR: 'Turkije', RS: 'Servie', MK: 'N-Macedonie', AL: 'Albanie',
-  BA: 'Bosnie', ME: 'Montenegro', MD: 'Moldavie', UA: 'Oekraine', LI: 'Liechtenstein',
-  MC: 'Monaco', SM: 'San Marino', GE: 'Georgie', BY: 'Belarus', RU: 'Rusland',
-  AM: 'Armenie', AZ: 'Azerbeidzjan', WO: 'WIPO (internationaal)',
+  EM: 'EU (EUIPO)', BX: 'Benelux (NL/BE/LU)', AT: 'Austria', BG: 'Bulgaria',
+  CY: 'Cyprus', CZ: 'Czechia', DE: 'Germany', DK: 'Denmark', EE: 'Estonia',
+  ES: 'Spain', FI: 'Finland', FR: 'France', GB: 'United Kingdom', GR: 'Greece',
+  HR: 'Croatia', HU: 'Hungary', IE: 'Ireland', IT: 'Italy', LT: 'Lithuania',
+  LV: 'Latvia', MT: 'Malta', PL: 'Poland', PT: 'Portugal', RO: 'Romania',
+  SE: 'Sweden', SI: 'Slovenia', SK: 'Slovakia', NO: 'Norway', IS: 'Iceland',
+  CH: 'Switzerland', TR: 'Turkey', RS: 'Serbia', MK: 'North Macedonia', AL: 'Albania',
+  BA: 'Bosnia and Herzegovina', ME: 'Montenegro', MD: 'Moldova', UA: 'Ukraine',
+  LI: 'Liechtenstein', MC: 'Monaco', SM: 'San Marino', GE: 'Georgia', BY: 'Belarus',
+  RU: 'Russia', AM: 'Armenia', AZ: 'Azerbaijan', WO: 'WIPO (international)',
 };
 const EU_BX = ['EM', 'BX'];
 
@@ -91,56 +94,56 @@ async function tmview(query, offices, maxPages = 10) {
 }
 
 const slim = (t) => ({
-  merk: t.tmName ?? null,
+  mark: t.tmName ?? null,
   register: OFFICES[t.tmOffice] || t.tmOffice || null,
   office: t.tmOffice ?? null,
   status: t.tradeMarkStatus ?? null,
-  levend: LIVE.has(t.tradeMarkStatus),
+  live: LIVE.has(t.tradeMarkStatus),
   type: t.tradeMarkType ?? null,
-  aanvraagdatum: (t.applicationDate || '').slice(0, 10) || null,
-  nummer: t.applicationNumber ?? null,
-  klassen: [...(t.niceClass || [])].sort((a, b) => a - b),
-  houder: t.applicantName || [],
-  dossier: t.tmOfficeURL || null,
+  application_date: (t.applicationDate || '').slice(0, 10) || null,
+  number: t.applicationNumber ?? null,
+  classes: [...(t.niceClass || [])].sort((a, b) => a - b),
+  holder: t.applicantName || [],
+  case_file: t.tmOfficeURL || null,
 });
 
 async function tSearch(a) {
   const q = (a.query || '').trim();
-  if (!q) throw new Error('query is verplicht');
+  if (!q) throw new Error('query is required');
   let offices = a.offices || EU_BX;
-  if (a.wereldwijd) offices = [];
-  const onlyLive = a.alleen_levend !== false;
+  if (a.worldwide) offices = [];
+  const onlyLive = a.live_only !== false;
   const classes = new Set(a.nice_classes || []);
   const limit = Number(a.max_results) || 50;
 
   const { recs, total } = await tmview(q, offices);
   let rows = [...recs.values()].map(slim);
-  if (onlyLive) rows = rows.filter((r) => r.levend);
-  if (classes.size) rows = rows.filter((r) => r.klassen.some((c) => classes.has(c)));
+  if (onlyLive) rows = rows.filter((r) => r.live);
+  if (classes.size) rows = rows.filter((r) => r.classes.some((c) => classes.has(c)));
   const n = norm(q);
-  for (const r of rows) r.exacte_naam = norm(r.merk) === n;
+  for (const r of rows) r.exact_name = norm(r.mark) === n;
   rows.sort((x, y) =>
-    (x.exacte_naam === y.exacte_naam ? 0 : x.exacte_naam ? -1 : 1) ||
-    (x.aanvraagdatum || '9999').localeCompare(y.aanvraagdatum || '9999'));
+    (x.exact_name === y.exact_name ? 0 : x.exact_name ? -1 : 1) ||
+    (x.application_date || '9999').localeCompare(y.application_date || '9999'));
 
   return {
-    zoekterm: q,
-    registers: offices.length ? offices.map((o) => OFFICES[o] || o) : ['alle TMview-registers'],
-    treffers_totaal_ruw: total,
-    na_filtering: rows.length,
+    query: q,
+    registers: offices.length ? offices.map((o) => OFFICES[o] || o) : ['all TMview registers'],
+    total_raw_hits: total,
+    after_filtering: rows.length,
     filters: {
-      alleen_levend: onlyLive,
-      nice_classes: classes.size ? [...classes].sort((a, b) => a - b) : 'geen',
+      live_only: onlyLive,
+      nice_classes: classes.size ? [...classes].sort((a, b) => a - b) : 'none',
     },
-    resultaten: rows.slice(0, limit),
-    afgekapt: Math.max(0, rows.length - limit),
-    bron: 'TMview (tmdn.org) - gratis, geen sleutel',
+    results: rows.slice(0, limit),
+    truncated: Math.max(0, rows.length - limit),
+    source: 'TMview (tmdn.org) - free, no key',
   };
 }
 
 async function tDetail(a) {
-  let nr = String(a.nummer ?? '').replace(/\D/g, '');
-  if (!nr) throw new Error('nummer is verplicht (EU-aanvraagnummer, bijv. 000039800)');
+  let nr = String(a.number ?? '').replace(/\D/g, '');
+  if (!nr) throw new Error('number is required (EU application number, e.g. 000039800)');
   nr = nr.padStart(9, '0');
   const d = await http(`https://euipo.europa.eu/copla/trademark/data/${nr}`, {
     headers: { Referer: 'https://euipo.europa.eu/eSearch/' },
@@ -149,80 +152,80 @@ async function tDetail(a) {
   const gs = d.gs?.defaultValue?.values || [];
 
   return {
-    nummer: d.number ?? null,
-    merk: d.name ?? null,
-    soort: d.feature ?? null,
+    number: d.number ?? null,
+    mark: d.name ?? null,
+    kind: d.feature ?? null,
     status: d.status ?? null,
-    levend: LIVE.has(d.status),
-    ingediend: ms(d.filingdate),
-    geregistreerd: ms(d.regdate),
-    geldig_tot: ms(d.expirydate),
-    vernieuwingsstatus: d.renewalStatus ?? null,
-    vernieuwingen: (d.renewals || []).map((r) => ({ status: r.status, datum: r.statusDate })),
-    klassen: d.niceclasses ?? null,
-    waren_en_diensten: gs.map((g) => ({ klasse: g.number, omschrijving: g.value })),
-    houder: (d.applicants || []).map((x) => ({
-      naam: x.name,
-      adres: (x.address?.postalAddress || '').replace(/\n/g, ', '),
+    live: LIVE.has(d.status),
+    filed: ms(d.filingdate),
+    registered: ms(d.regdate),
+    valid_until: ms(d.expirydate),
+    renewal_status: d.renewalStatus ?? null,
+    renewals: (d.renewals || []).map((r) => ({ status: r.status, date: r.statusDate })),
+    classes: d.niceclasses ?? null,
+    goods_and_services: gs.map((g) => ({ class: g.number, description: g.value })),
+    holder: (d.applicants || []).map((x) => ({
+      name: x.name,
+      address: (x.address?.postalAddress || '').replace(/\n/g, ', '),
     })),
-    opposities: (d.oppositions || []).map((o) => ({
-      nummer: o.number,
-      datum: ms(o.date),
+    oppositions: (d.oppositions || []).map((o) => ({
+      number: o.number,
+      date: ms(o.date),
       status: o.status,
-      grond: (o.grounds || '').trim(),
-      opposant: (o.opponents || []).map((x) => x.name),
+      grounds: (o.grounds || '').trim(),
+      opponent: (o.opponents || []).map((x) => x.name),
     })),
-    dossier: `https://euipo.europa.eu/eSearch/#details/trademarks/${d.number}`,
-    bron: 'EUIPO eSearch (copla) - gratis, geen sleutel',
+    case_file: `https://euipo.europa.eu/eSearch/#details/trademarks/${d.number}`,
+    source: 'EUIPO eSearch (copla) - free, no key',
   };
 }
 
 async function tClearance(a) {
-  const q = (a.naam || '').trim();
-  if (!q) throw new Error('naam is verplicht');
+  const q = (a.name || '').trim();
+  if (!q) throw new Error('name is required');
   const classes = new Set(a.nice_classes || [9, 42]);
   const { recs, total } = await tmview(q, EU_BX);
   const rows = [...recs.values()].map(slim);
-  const live = rows.filter((r) => r.levend);
+  const live = rows.filter((r) => r.live);
   const n = norm(q);
-  const exactLive = live.filter((r) => norm(r.merk) === n);
-  const exactDead = rows.filter((r) => norm(r.merk) === n && !r.levend);
-  const overlap = live.filter((r) => r.klassen.some((c) => classes.has(c)) && norm(r.merk) !== n);
+  const exactLive = live.filter((r) => norm(r.mark) === n);
+  const exactDead = rows.filter((r) => norm(r.mark) === n && !r.live);
+  const overlap = live.filter((r) => r.classes.some((c) => classes.has(c)) && norm(r.mark) !== n);
   const benelux = live.filter((r) => r.office === 'BX');
 
-  let oordeel;
-  if (exactLive.length && exactLive.some((r) => r.klassen.some((c) => classes.has(c))))
-    oordeel = 'BEZET - identiek merk, levend, in jouw klassen';
-  else if (exactLive.length) oordeel = 'IDENTIEK MERK BESTAAT, maar in andere klassen';
-  else if (overlap.length) oordeel = 'NAAM VRIJ, maar er zijn levende, gelijkende rechten in jouw klassen';
-  else oordeel = 'VRIJ - geen levend identiek merk en geen overlap in jouw klassen';
+  let verdict;
+  if (exactLive.length && exactLive.some((r) => r.classes.some((c) => classes.has(c))))
+    verdict = 'TAKEN - identical live mark in your classes';
+  else if (exactLive.length) verdict = 'IDENTICAL MARK EXISTS, but in other classes';
+  else if (overlap.length) verdict = 'NAME FREE, but live similar rights exist in your classes';
+  else verdict = 'FREE - no live identical mark and no class overlap';
 
   return {
-    naam: q,
-    gecheckte_klassen: [...classes].sort((a, b) => a - b),
+    name: q,
+    classes_checked: [...classes].sort((a, b) => a - b),
     registers: ['EU (EUIPO)', 'Benelux (NL/BE/LU)'],
-    oordeel,
-    identiek_en_levend: exactLive,
-    identiek_maar_verlopen: exactDead,
-    gelijkend_levend_in_jouw_klassen: overlap.slice(0, 25),
-    levend_in_benelux: benelux.slice(0, 15),
-    aantallen: {
-      ruw: total, levend: live.length,
-      identiek_levend: exactLive.length, overlap_in_klassen: overlap.length,
+    verdict,
+    identical_and_live: exactLive,
+    identical_but_expired: exactDead,
+    similar_live_in_your_classes: overlap.slice(0, 25),
+    live_in_benelux: benelux.slice(0, 15),
+    counts: {
+      raw: total, live: live.length,
+      identical_live: exactLive.length, class_overlap: overlap.length,
     },
-    let_op:
-      'Registerdata, geen merkenrechtelijk advies. Statussen lopen achter op de ' +
-      'bronregisters; verifieer een levend recht met tm_detail. Een merk kan ook zonder ' +
-      'registratie bestaan (handelsnaamrecht door gebruik).',
-    bronnen: ['TMview (tmdn.org)', 'EUIPO eSearch (copla)'],
+    note:
+      'Register data, not legal advice. Statuses lag behind the source registers; ' +
+      'confirm any live right with tm_detail. A right can also exist unregistered ' +
+      '(in the Netherlands, trade name rights arise from use).',
+    sources: ['TMview (tmdn.org)', 'EUIPO eSearch (copla)'],
   };
 }
 
 async function tOffices() {
   return {
-    registers: Object.entries(OFFICES).map(([code, naam]) => ({ code, naam })),
-    standaard: EU_BX,
-    tip: 'Laat offices leeg met wereldwijd=true voor alle TMview-registers.',
+    registers: Object.entries(OFFICES).map(([code, name]) => ({ code, name })),
+    default: EU_BX,
+    tip: 'Set worldwide=true to search every TMview register instead of EU + Benelux.',
   };
 }
 
@@ -243,49 +246,49 @@ function gleifEntity(x) {
       .filter(Boolean).join(', ') || null;
   return {
     lei: a.lei ?? null,
-    naam: e.legalName?.name ?? null,
-    ook_bekend_als: (e.otherNames || []).map((n) => n.name).filter(Boolean),
-    rechtsvorm_code: e.legalForm?.id ?? null,          // ELF code, 2HBR = GmbH, 54M6 = B.V.
-    rechtsvorm_vrij: e.legalForm?.other ?? null,
+    name: e.legalName?.name ?? null,
+    also_known_as: (e.otherNames || []).map((n) => n.name).filter(Boolean),
+    legal_form_code: e.legalForm?.id ?? null,          // ELF code, 2HBR = GmbH, 54M6 = B.V.
+    legal_form_other: e.legalForm?.other ?? null,
     status: e.status ?? null,                          // ACTIVE | INACTIVE
-    registratienummer: e.registeredAs ?? null,         // national register number
-    jurisdictie: e.jurisdiction ?? null,
-    adres: addr(e.legalAddress),
-    hoofdvestiging: addr(e.headquartersAddress),
+    registration_number: e.registeredAs ?? null,       // national register number
+    jurisdiction: e.jurisdiction ?? null,
+    address: addr(e.legalAddress),
+    headquarters_address: addr(e.headquartersAddress),
     lei_status: a.registration?.status ?? null,        // ISSUED | LAPSED | RETIRED
-    lei_bijgewerkt: (a.registration?.lastUpdateDate || '').slice(0, 10) || null,
-    dossier: a.lei ? `https://search.gleif.org/#/record/${a.lei}` : null,
+    lei_updated: (a.registration?.lastUpdateDate || '').slice(0, 10) || null,
+    record_url: a.lei ? `https://search.gleif.org/#/record/${a.lei}` : null,
   };
 }
 
 const GLEIF_CAVEAT =
-  'GLEIF bevat alleen entiteiten met een LEI. Grote bedrijven en financiele partijen ' +
-  'staan er vrijwel altijd in, veel MKB niet — een leeg resultaat betekent geen LEI, ' +
-  'niet dat het bedrijf niet bestaat. Voor Nederlandse bv\'s zonder LEI is er geen ' +
-  'gratis, sleutelloze bron; gebruik dan het KVK-handelsregister.';
+  'GLEIF only holds entities that have a LEI. Large companies and anything active in ' +
+  'financial markets almost always do; many SMEs do not — an empty result means no LEI, ' +
+  'not no company. For Dutch B.V.s without a LEI, try the eu_company_* or nl_company_* ' +
+  'tools instead.';
 
 async function tCompanySearch(a) {
-  const q = (a.naam || '').trim();
-  if (!q) throw new Error('naam is verplicht');
+  const q = (a.name || '').trim();
+  if (!q) throw new Error('name is required');
   const size = Math.min(Number(a.max_results) || 10, 50);
   const p = new URLSearchParams({ 'filter[fulltext]': q, 'page[size]': String(size) });
-  if (a.land) p.set('filter[entity.legalAddress.country]', String(a.land).toUpperCase());
+  if (a.country) p.set('filter[entity.legalAddress.country]', String(a.country).toUpperCase());
 
   const d = await http(`${GLEIF}/lei-records?${p}`, { headers: JSONAPI });
   const rows = (d.data || []).map(gleifEntity);
   return {
-    zoekterm: q,
-    land: a.land ? String(a.land).toUpperCase() : 'alle landen',
-    treffers_totaal: d.meta?.pagination?.total ?? rows.length,
-    resultaten: rows,
-    let_op: GLEIF_CAVEAT,
-    bron: 'GLEIF (api.gleif.org) - gratis, geen sleutel',
+    query: q,
+    country: a.country ? String(a.country).toUpperCase() : 'all countries',
+    total: d.meta?.pagination?.total ?? rows.length,
+    results: rows,
+    note: GLEIF_CAVEAT,
+    source: 'GLEIF (api.gleif.org) - free, no key',
   };
 }
 
 async function tCompanyDetail(a) {
   const lei = String(a.lei || '').trim().toUpperCase();
-  if (!/^[A-Z0-9]{20}$/.test(lei)) throw new Error('lei is verplicht: 20 tekens, bijv. 5493005XXPWUMR2E5305');
+  if (!/^[A-Z0-9]{20}$/.test(lei)) throw new Error('lei is required: 20 characters, e.g. 5493005XXPWUMR2E5305');
 
   const rec = await http(`${GLEIF}/lei-records/${lei}`, { headers: JSONAPI });
   const rel = async (kind) => {
@@ -298,20 +301,20 @@ async function tCompanyDetail(a) {
       return [];   // no such relationship is a 404, not an error worth surfacing
     }
   };
-  const [moeder, top, dochters] = await Promise.all([
+  const [parent, top, children] = await Promise.all([
     rel('direct-parent'), rel('ultimate-parent'), rel('direct-children'),
   ]);
 
   return {
     ...gleifEntity(rec.data),
-    directe_moeder: moeder,
-    uiteindelijke_moeder: top,
-    dochters,
-    concern_let_op:
-      'Alleen relaties tussen entiteiten die beide een LEI hebben zijn zichtbaar. ' +
-      'Geen moeder betekent: top van het concern, of de moeder heeft geen LEI.',
-    let_op: GLEIF_CAVEAT,
-    bron: 'GLEIF (api.gleif.org) - gratis, geen sleutel',
+    direct_parent: parent,
+    ultimate_parent: top,
+    children,
+    group_note:
+      'Only relationships where both entities hold a LEI are visible. No parent means ' +
+      'either the top of the group, or a parent that holds no LEI.',
+    note: GLEIF_CAVEAT,
+    source: 'GLEIF (api.gleif.org) - free, no key',
   };
 }
 
@@ -323,40 +326,252 @@ const VIES_MS = new Set([
 ]);
 
 async function tVatCheck(a) {
-  let s = String(a.btw_nummer ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-  if (a.land && !/^[A-Z]{2}/.test(s)) s = String(a.land).toUpperCase() + s;
+  let s = String(a.vat_number ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (a.country && !/^[A-Z]{2}/.test(s)) s = String(a.country).toUpperCase() + s;
   const m = s.match(/^([A-Z]{2})([A-Z0-9]{2,14})$/);
-  if (!m) throw new Error('btw_nummer is verplicht, bijv. NL123456789B01 of DE123456789');
-  let [, land, nr] = m;
-  if (land === 'GR') land = 'EL';                 // Greece registers VAT as EL
-  if (!VIES_MS.has(land)) {
+  if (!m) throw new Error('vat_number is required, e.g. NL123456789B01 or DE123456789');
+  let [, cc, nr] = m;
+  if (cc === 'GR') cc = 'EL';                     // Greece registers VAT as EL
+  if (!VIES_MS.has(cc)) {
     throw new Error(
-      `"${land}" is geen VIES-lidstaat. VIES dekt alleen de EU plus XI ` +
-      `(Noord-Ierland). Geldige codes: ${[...VIES_MS].join(', ')}`);
+      `"${cc}" is not a VIES member state. VIES covers the EU plus XI ` +
+      `(Northern Ireland). Valid codes: ${[...VIES_MS].join(', ')}`);
   }
 
   const d = await http(
-    `https://ec.europa.eu/taxation_customs/vies/rest-api/ms/${land}/vat/${nr}`,
+    `https://ec.europa.eu/taxation_customs/vies/rest-api/ms/${cc}/vat/${nr}`,
     { headers: { Accept: 'application/json' } });
 
   const clean = (v) => (v || '').replace(/\s*\n+\s*/g, ', ').replace(/^,\s*|,\s*$/g, '').trim();
-  const naam = clean(d.name);
+  const name = clean(d.name);
   return {
-    btw_nummer: `${land}${nr}`,
-    geldig: d.isValid === true,
-    naam: naam && naam !== '---' ? naam : null,
-    adres: (() => { const x = clean(d.address); return x && x !== '---' ? x : null; })(),
-    gecontroleerd_op: (d.requestDate || '').slice(0, 10) || null,
-    melding: d.userError ?? null,
-    let_op:
-      'VIES bevestigt of een btw-nummer geldig is en geeft de naam en het adres zoals ' +
-      'de nationale belastingdienst die registreert. Sommige lidstaten geven naam en ' +
-      'adres niet vrij; dan is geldig=true maar blijft naam leeg. Zoeken op naam kan ' +
-      'niet — je moet het nummer al hebben.',
-    bron: 'EU VIES (ec.europa.eu) - gratis, geen sleutel',
+    vat_number: `${cc}${nr}`,
+    valid: d.isValid === true,
+    name: name && name !== '---' ? name : null,
+    address: (() => { const x = clean(d.address); return x && x !== '---' ? x : null; })(),
+    checked_on: (d.requestDate || '').slice(0, 10) || null,
+    message: d.userError ?? null,
+    note:
+      'VIES confirms whether a VAT number is valid and returns the name and address as ' +
+      'the national tax authority holds them. Some member states do not release name and ' +
+      'address; there valid=true but name stays empty. It cannot be searched by name — ' +
+      'you need the number up front.',
+    source: 'EU VIES (ec.europa.eu) - free, no key',
   };
 }
 
+
+/* ------------------------------------------------------------------ *
+ * Dutch Handelsregister via Company.info (Webservices.nl SOAP).
+ *
+ * OPTIONAL and PAID. Credentials come from the environment only:
+ *   COMPANYINFO_USERNAME, COMPANYINFO_PASSWORD, COMPANYINFO_WSDL_URL
+ * Never hardcode them — this repository is public. Without them the
+ * tools stay listed and explain what to set instead of failing quietly.
+ * ------------------------------------------------------------------ */
+
+const CI_ENDPOINT_DEFAULT = 'https://ws1.webservices.nl/soap_doclit.php';
+const CI_NS = 'http://www.webservices.nl/soap/';
+
+function ciConfig() {
+  const user = process.env.COMPANYINFO_USERNAME;
+  const pass = process.env.COMPANYINFO_PASSWORD;
+  if (!user || !pass) {
+    throw new Error(
+      'Company.info is not configured. Set COMPANYINFO_USERNAME and ' +
+      'COMPANYINFO_PASSWORD in the MCP server environment (COMPANYINFO_WSDL_URL is ' +
+      'optional). This is a paid service; every other tool on this server works ' +
+      'without it.');
+  }
+  let url = process.env.COMPANYINFO_WSDL_URL || CI_ENDPOINT_DEFAULT;
+  url = url.replace(/\?wsdl$/i, '');
+  return { user, pass, url };
+}
+
+const XML_ENT = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
+const xmlDecode = (t) =>
+  t.replace(/&(#x?[0-9a-fA-F]+|[a-z]+);/g, (m, e) => {
+    if (e[0] === '#') return String.fromCodePoint(parseInt(e[1] === 'x' ? e.slice(2) : e.slice(1), e[1] === 'x' ? 16 : 10));
+    return XML_ENT[e] ?? m;
+  });
+const xmlEscape = (t) =>
+  String(t).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[c]));
+
+/**
+ * Minimal XML -> plain object. Namespace prefixes are dropped; a tag that
+ * repeats becomes an array. Leaf elements become their decoded text.
+ */
+function xmlToObj(xml) {
+  const root = { kids: {}, text: '' };
+  const stack = [root];
+  const local = (n) => (n.includes(':') ? n.split(':').pop() : n);
+  const attach = (node, name) => {
+    const parent = stack[stack.length - 1];
+    const value = Object.keys(node.kids).length ? node.kids : xmlDecode(node.text).trim();
+    const key = local(name);
+    if (key in parent.kids) {
+      if (!Array.isArray(parent.kids[key])) parent.kids[key] = [parent.kids[key]];
+      parent.kids[key].push(value);
+    } else {
+      parent.kids[key] = value;
+    }
+  };
+  const re = /<!--[\s\S]*?-->|<\?[\s\S]*?\?>|<(\/?)([A-Za-z_][\w.:-]*)((?:"[^"]*"|'[^']*'|[^>"'])*?)(\/?)>|([^<]+)/g;
+  let m;
+  while ((m = re.exec(xml)) !== null) {
+    const [, close, name, , selfClose, text] = m;
+    if (text !== undefined) { stack[stack.length - 1].text += text; continue; }
+    if (!name) continue;                                  // comment or declaration
+    if (close) { attach(stack.pop(), name); continue; }
+    if (selfClose) { attach({ kids: {}, text: '' }, name); continue; }
+    stack.push({ kids: {}, text: '' });
+  }
+  return root.kids;
+}
+
+/** Always give me a list, whether the parser saw one item or many. */
+const arr = (v) => (v == null || v === '' ? [] : Array.isArray(v) ? v : [v]);
+
+async function soapCall(op, fields) {
+  const { user, pass, url } = ciConfig();
+  const inner = Object.entries(fields)
+    .map(([k, v]) => `<tns:${k}>${xmlEscape(v ?? '')}</tns:${k}>`).join('');
+  const envelope =
+    '<?xml version="1.0" encoding="UTF-8"?>' +
+    `<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" xmlns:tns="${CI_NS}">` +
+    `<soap:Header><tns:HeaderLogin><tns:username>${xmlEscape(user)}</tns:username>` +
+    `<tns:password>${xmlEscape(pass)}</tns:password></tns:HeaderLogin></soap:Header>` +
+    `<soap:Body><tns:${op}>${inner}</tns:${op}></soap:Body></soap:Envelope>`;
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'text/xml; charset=utf-8',
+      SOAPAction: `https://ws1.webservices.nl/soap_doclit.php/${op}`,
+      'User-Agent': `${NAME}/${VERSION}`,
+    },
+    body: envelope,
+    signal: AbortSignal.timeout(90_000),
+  });
+  const body = await res.text();
+  const fault = /<faultstring>([\s\S]*?)<\/faultstring>/.exec(body);
+  if (fault) throw new Error(`Company.info: ${xmlDecode(fault[1]).trim()}`);
+  if (!res.ok) throw new Error(`Company.info: HTTP ${res.status}`);
+
+  const parsed = xmlToObj(body);
+  const out = parsed?.Envelope?.Body?.[`${op}Response`]?.out;
+  if (out === undefined) throw new Error(`Company.info: unexpected response to ${op}`);
+  return out;
+}
+
+const CI_SOURCE = 'Company.info / Webservices.nl (Dutch Handelsregister) - PAID, per query';
+
+async function tNlSearch(a) {
+  const name = (a.name || '').trim();
+  if (!name && !a.kvk_number && !a.domain) {
+    throw new Error('provide at least one of: name, kvk_number, domain');
+  }
+  const out = await soapCall('dutchBusinessSearch', {
+    dossier_number: a.kvk_number || '',
+    trade_name: name,
+    city: a.city || '',
+    street: '',
+    postcode: a.postal_code || '',
+    house_number: 0,
+    house_number_addition: '',
+    telephone_number: '',
+    domain_name: a.domain || '',
+    strict_search: a.strict === true,
+    page: Number(a.page) || 1,
+  });
+  const paging = out.paging || {};
+  return {
+    query: name || a.kvk_number || a.domain,
+    total: Number(paging.numresults) || 0,
+    page: `${paging.curpage || 1} of ${paging.numpages || 1}`,
+    results: arr(out.results?.item).map((x) => ({
+      kvk_number: x.dossier_number ?? null,
+      establishment_number: x.establishment_number ?? null,
+      legal_name: x.legal_name ?? null,
+      trade_name: x.trade_name ?? null,
+      matched_on: x.match_type ?? null,
+      city: x.establishment_city ?? null,
+      street: x.establishment_street ?? null,
+      main_establishment: x.indication_main_establishment === 'true',
+    })),
+    source: CI_SOURCE,
+  };
+}
+
+async function tNlProfile(a) {
+  const nr = String(a.kvk_number || '').replace(/\D/g, '');
+  if (!nr) throw new Error('kvk_number is required (8 digits)');
+  const o = await soapCall('dutchBusinessGetDossierV3', {
+    dossier_number: nr,
+    establishment_number: a.establishment_number || '',
+  });
+  const addr = (x) => {
+    const f = x?.official || x?.original || x || {};
+    return [
+      [f.street, f.house_number, f.house_number_addition].filter(Boolean).join(' '),
+      f.postcode, f.city, f.country,
+    ].filter(Boolean).join(', ') || null;
+  };
+  return {
+    kvk_number: o.dossier_number ?? null,
+    establishment_number: o.establishment_number ?? null,
+    main_establishment: o.indication_main_establishment === 'true',
+    legal_name: o.legal_name ?? null,
+    trade_name: o.trade_name_full ?? o.trade_name_45 ?? null,
+    all_trade_names: arr(o.trade_names?.item),
+    legal_form: o.legal_form_text ?? null,
+    legal_form_code: o.legal_form_code ?? null,
+    rsin: o.rsin_number ?? null,
+    establishment_address: addr(o.establishment_address),
+    correspondence_address: addr(o.correspondence_address),
+    last_updated: o.update_info?.date_last_update ?? null,
+    note:
+      'For trademark work, all_trade_names is the field that matters: in the Netherlands ' +
+      'a trade name right arises from use, with no registration to search.',
+    source: CI_SOURCE,
+  };
+}
+
+async function tNlVat(a) {
+  const nr = String(a.kvk_number || '').replace(/\D/g, '');
+  if (!nr) throw new Error('kvk_number is required');
+  const o = await soapCall('dutchBusinessGetVatNumber', { dossier_number: nr });
+  return {
+    kvk_number: o.dossier_number ?? null,
+    vat_number: o.vat_number || null,
+    last_updated: o.date_last_update ?? null,
+    tip: 'Feed this number to vat_check to confirm the name for free via EU VIES.',
+    source: CI_SOURCE,
+  };
+}
+
+async function tNlTree(a) {
+  const nr = String(a.kvk_number || '').replace(/\D/g, '');
+  if (!nr) throw new Error('kvk_number is required');
+  const o = await soapCall('dutchBusinessGetOrganizationTree', { dossier_number: nr });
+  const walk = (node) => ({
+    name: node.name ?? null,
+    kind: node.type ?? null,
+    kvk_number: /^\d+$/.test(String(node.id || '')) ? node.id : null,
+    id: node.id ?? null,
+    below: arr(node.children?.item).map(walk),
+  });
+  const top = o.tree ? walk(o.tree) : null;
+  return {
+    requested_for: { name: o.name ?? null, kvk_number: o.dossier_number ?? null },
+    group: top,
+    note:
+      'This tree can contain names of natural persons (UBOs, directors). That is ' +
+      'personal data under the GDPR: handle it accordingly and do not pass it on more ' +
+      'widely than the task needs.',
+    source: CI_SOURCE,
+  };
+}
 
 /* ------------------------------------------------------------------ *
  * National company registers — free, no key, no registration.
@@ -366,8 +581,6 @@ async function tVatCheck(a) {
  * so an empty answer is never mistaken for "no such company".
  * ------------------------------------------------------------------ */
 
-/** Always give me a list, whether the source sent one item, many, or nothing. */
-const arr = (v) => (v == null || v === '' ? [] : Array.isArray(v) ? v : [v]);
 
 const APP_UA = `ip-free-mcp/${VERSION} (+https://github.com/AI-AlexBaum/IP-MCP)`;
 const today = () => new Date().toISOString().slice(0, 10);
@@ -381,112 +594,112 @@ const current = (list, endKey = 'validTo') => {
 
 const EU_REGISTERS = {
   CZ: {
-    land: 'Tsjechie', register: 'ARES (Ministerie van Financien)', id: 'ICO',
+    country_name: 'Czechia', register: 'ARES (Ministry of Finance)', id: 'ICO',
     async byName(q, n) {
       const d = await http('https://ares.gov.cz/ekonomicke-subjekty-v-be/rest/ekonomicke-subjekty/vyhledat',
         { body: JSON.stringify({ obchodniJmeno: q, pocet: Math.min(n, 100) }) });
-      return { totaal: d.pocetCelkem ?? 0, rows: arr(d.ekonomickeSubjekty).map(czRow) };
+      return { total: d.pocetCelkem ?? 0, rows: arr(d.ekonomickeSubjekty).map(czRow) };
     },
     async byNumber(id) {
       const d = await http(`https://ares.gov.cz/ekonomicke-subjekty-v-be/rest/ekonomicke-subjekty/${encodeURIComponent(id)}`);
-      return { totaal: 1, rows: [czRow(d)] };
+      return { total: 1, rows: [czRow(d)] };
     },
   },
   SK: {
-    land: 'Slowakije', register: 'RPO (Statistisch Bureau)', id: 'ICO',
+    country_name: 'Slovakia', register: 'RPO (Statistical Office)', id: 'ICO',
     async byName(q, n) {
       const d = await http(`https://api.statistics.sk/rpo/v1/search?fullName=${encodeURIComponent(q)}&limit=${Math.min(n, 100)}`);
-      return { totaal: arr(d.results).length, rows: arr(d.results).map(skRow) };
+      return { total: arr(d.results).length, rows: arr(d.results).map(skRow) };
     },
   },
   FI: {
-    land: 'Finland', register: 'PRH avoindata', id: 'Business ID',
+    country_name: 'Finland', register: 'PRH avoindata', id: 'Business ID',
     async byName(q, n) {
       const d = await http(`https://avoindata.prh.fi/opendata-ytj-api/v3/companies?name=${encodeURIComponent(q)}`);
-      return { totaal: d.totalResults ?? arr(d.companies).length, rows: arr(d.companies).slice(0, n).map(fiRow) };
+      return { total: d.totalResults ?? arr(d.companies).length, rows: arr(d.companies).slice(0, n).map(fiRow) };
     },
   },
   FR: {
-    land: 'Frankrijk', register: 'recherche-entreprises (INSEE/RNE)', id: 'SIREN',
+    country_name: 'France', register: 'recherche-entreprises (INSEE/RNE)', id: 'SIREN',
     async byName(q, n) {
       const d = await http(`https://recherche-entreprises.api.gouv.fr/search?q=${encodeURIComponent(q)}&per_page=${Math.min(n, 25)}`);
-      return { totaal: d.total_results ?? arr(d.results).length, rows: arr(d.results).map(frRow) };
+      return { total: d.total_results ?? arr(d.results).length, rows: arr(d.results).map(frRow) };
     },
   },
   NO: {
-    land: 'Noorwegen', register: 'Bronnoysund Enhetsregisteret', id: 'Organisasjonsnummer',
+    country_name: 'Norway', register: 'Bronnoysund Enhetsregisteret', id: 'Organisasjonsnummer',
     async byName(q, n) {
       const d = await http(`https://data.brreg.no/enhetsregisteret/api/enheter?navn=${encodeURIComponent(q)}&size=${Math.min(n, 100)}`);
-      return { totaal: d.page?.totalElements ?? 0, rows: arr(d._embedded?.enheter).map(noRow) };
+      return { total: d.page?.totalElements ?? 0, rows: arr(d._embedded?.enheter).map(noRow) };
     },
   },
   DK: {
-    land: 'Denemarken', register: 'CVR via cvrapi.dk', id: 'CVR-nummer',
-    note: 'Deze bron geeft alleen de beste treffer terug, geen lijst.',
+    country_name: 'Denmark', register: 'CVR via cvrapi.dk', id: 'CVR number',
+    note: 'This source returns only the single best match, not a list.',
     async byName(q) {
       const d = await http(`https://cvrapi.dk/api?search=${encodeURIComponent(q)}&country=dk`,
         { headers: { 'User-Agent': APP_UA } });
-      return { totaal: d?.vat ? 1 : 0, rows: d?.vat ? [dkRow(d)] : [] };
+      return { total: d?.vat ? 1 : 0, rows: d?.vat ? [dkRow(d)] : [] };
     },
   },
   EE: {
-    land: 'Estland', register: 'Ariregister (RIK)', id: 'Registrikood',
-    note: 'Deze bron geeft naam en registratienummer, geen adres.',
+    country_name: 'Estonia', register: 'Ariregister (RIK)', id: 'Registrikood',
+    note: 'This source returns name and registration number, no address.',
     async byName(q, n) {
       const d = await http(`https://ariregister.rik.ee/est/api/autocomplete?q=${encodeURIComponent(q)}&results=${Math.min(n, 50)}`);
-      return { totaal: arr(d.data).length, rows: arr(d.data).map(eeRow) };
+      return { total: arr(d.data).length, rows: arr(d.data).map(eeRow) };
     },
   },
   PL: {
-    land: 'Polen', register: 'Wykaz podatnikow VAT (Ministerie van Financien)', id: 'NIP of REGON',
-    note: 'Zoeken op naam kan niet; alleen op NIP of REGON via eu_company_by_number.',
+    country_name: 'Poland', register: 'Wykaz podatnikow VAT (Ministry of Finance)', id: 'NIP or REGON',
+    note: 'No name search; by NIP or REGON only, via eu_company_by_number.',
     async byNumber(id) {
       const kind = id.replace(/\D/g, '').length === 9 ? 'regon' : 'nip';
       const d = await http(`https://wl-api.mf.gov.pl/api/search/${kind}/${encodeURIComponent(id.replace(/\D/g, ''))}?date=${today()}`);
       const su = d.result?.subject;
-      return { totaal: su ? 1 : 0, rows: su ? [plRow(su)] : [] };
+      return { total: su ? 1 : 0, rows: su ? [plRow(su)] : [] };
     },
   },
 };
 
 // Countries with no free keyless register, and why. Reported, not hidden.
 const EU_NO_FREE_API = {
-  AT: 'Firmenbuch is betaald', BE: 'KBO alleen als open-databestand of webformulier',
-  BG: 'geen publieke API', CH: 'Zefix vereist sinds kort authenticatie (HTTP 401)',
-  CY: 'geen publieke API', DE: 'Handelsregister heeft geen gratis API; offeneregister.de is buiten dienst',
-  ES: 'Registro Mercantil is betaald', GR: 'GEMI vereist een sleutel',
-  HR: 'sudreg-api reageert niet', HU: 'geen publieke API',
-  IE: 'CRO vereist API-credentials', IS: 'geen publieke API',
-  IT: 'Registro Imprese is betaald', LT: 'alleen als open-databestand',
-  LU: 'LBR is betaald', LV: 'alleen als open-databestand', MT: 'MBR is betaald',
-  NL: 'KVK vereist een abonnement; zie de nl_company_* tools',
-  PT: 'geen publieke API', RO: 'ANAF-endpoint niet publiek bereikbaar',
-  SE: 'Bolagsverket is betaald', SI: 'AJPES heeft geen publieke API',
-  UK: 'Companies House is gratis maar vereist een (gratis) API-sleutel',
+  AT: 'Firmenbuch is paid', BE: 'KBO is a bulk open-data file or a web form only',
+  BG: 'no public API', CH: 'Zefix now requires authentication (HTTP 401)',
+  CY: 'no public API', DE: 'Handelsregister has no free API; offeneregister.de is out of service',
+  ES: 'Registro Mercantil is paid', GR: 'GEMI requires an API key',
+  HR: 'sudreg-api does not respond', HU: 'no public API',
+  IE: 'CRO requires API credentials', IS: 'no public API',
+  IT: 'Registro Imprese is paid', LT: 'bulk open-data file only',
+  LU: 'LBR is paid', LV: 'bulk open-data file only', MT: 'MBR is paid',
+  NL: 'KVK requires a subscription; see the nl_company_* tools',
+  PT: 'no public API', RO: 'ANAF endpoint not publicly reachable',
+  SE: 'Bolagsverket is paid', SI: 'AJPES has no public API',
+  UK: 'Companies House is free but requires a (free) API key',
 };
 
 const czRow = (r) => ({
-  land: 'CZ', naam: r.obchodniJmeno ?? null,
-  nummer: r.ico ?? null, nummer_soort: 'ICO',
-  status: r.datumZaniku ? 'beeindigd' : 'actief',
-  rechtsvorm_code: r.pravniForma ?? null,
-  opgericht: r.datumVzniku ?? null,
-  adres: r.sidlo?.textovaAdresa
+  country: 'CZ', name: r.obchodniJmeno ?? null,
+  number: r.ico ?? null, number_type: 'ICO',
+  status: r.datumZaniku ? 'ended' : 'active',
+  legal_form_code: r.pravniForma ?? null,
+  founded: r.datumVzniku ?? null,
+  address: r.sidlo?.textovaAdresa
     || join(r.sidlo?.nazevUlice, r.sidlo?.cisloDomovni, r.sidlo?.psc, r.sidlo?.nazevObce),
-  btw_nummer: r.dic ?? null,
-  bron: 'ARES (ares.gov.cz) - gratis, geen sleutel',
+  vat_number: r.dic ?? null,
+  source: 'ARES (ares.gov.cz) - free, no key',
 });
 
 const skRow = (r) => {
   const a = current(r.addresses);
   return {
-    land: 'SK', naam: current(r.fullNames)?.value ?? null,
-    nummer: current(r.identifiers)?.value ?? arr(r.identifiers)[0]?.value ?? null,
-    nummer_soort: 'ICO',
-    status: r.termination ? 'beeindigd' : 'actief',
-    opgericht: r.establishment?.date ?? null,
-    adres: a ? join(a.street, a.buildingNumber, arr(a.postalCodes)[0], a.municipality?.value) : null,
-    bron: 'RPO (api.statistics.sk) - gratis, geen sleutel',
+    country: 'SK', name: current(r.fullNames)?.value ?? null,
+    number: current(r.identifiers)?.value ?? arr(r.identifiers)[0]?.value ?? null,
+    number_type: 'ICO',
+    status: r.termination ? 'ended' : 'active',
+    founded: r.establishment?.date ?? null,
+    address: a ? join(a.street, a.buildingNumber, arr(a.postalCodes)[0], a.municipality?.value) : null,
+    source: 'RPO (api.statistics.sk) - free, no key',
   };
 };
 
@@ -494,149 +707,149 @@ const fiRow = (r) => {
   const a = arr(r.addresses)[0];
   const form = arr(arr(r.companyForms)[0]?.descriptions).find((d) => d.languageCode === '3');
   return {
-    land: 'FI', naam: arr(r.names)[0]?.name ?? null,
-    nummer: r.businessId?.value ?? r.businessId ?? null, nummer_soort: 'Business ID',
-    status: String(r.status) === '2' ? 'actief' : `code ${r.status}`,
-    rechtsvorm: form?.description ?? null,
-    opgericht: r.registrationDate ?? null,
-    adres: a ? join(a.street, a.buildingNumber, a.postCode, arr(a.postOffices)[0]?.city) : null,
+    country: 'FI', name: arr(r.names)[0]?.name ?? null,
+    number: r.businessId?.value ?? r.businessId ?? null, number_type: 'Business ID',
+    status: String(r.status) === '2' ? 'active' : `code ${r.status}`,
+    legal_form: form?.description ?? null,
+    founded: r.registrationDate ?? null,
+    address: a ? join(a.street, a.buildingNumber, a.postCode, arr(a.postOffices)[0]?.city) : null,
     website: r.website ?? null,
-    bron: 'PRH avoindata (avoindata.prh.fi) - gratis, geen sleutel',
+    source: 'PRH avoindata (avoindata.prh.fi) - free, no key',
   };
 };
 
 const frRow = (r) => ({
-  land: 'FR', naam: r.nom_complet ?? null,
-  nummer: r.siren ?? null, nummer_soort: 'SIREN',
-  status: r.etat_administratif === 'A' ? 'actief' : 'beeindigd',
-  rechtsvorm_code: r.nature_juridique ?? null,
-  opgericht: r.date_creation ?? null,
-  adres: r.siege?.adresse ?? null,
-  btw_nummer: r.tva ?? null,
-  bron: 'recherche-entreprises.api.gouv.fr - gratis, geen sleutel',
+  country: 'FR', name: r.nom_complet ?? null,
+  number: r.siren ?? null, number_type: 'SIREN',
+  status: r.etat_administratif === 'A' ? 'active' : 'ended',
+  legal_form_code: r.nature_juridique ?? null,
+  founded: r.date_creation ?? null,
+  address: r.siege?.adresse ?? null,
+  vat_number: r.tva ?? null,
+  source: 'recherche-entreprises.api.gouv.fr - free, no key',
 });
 
 const noRow = (r) => ({
-  land: 'NO', naam: r.navn ?? null,
-  nummer: r.organisasjonsnummer ?? null, nummer_soort: 'Organisasjonsnummer',
-  status: r.konkurs ? 'faillissement' : r.underAvvikling ? 'in liquidatie' : 'actief',
-  rechtsvorm: r.organisasjonsform?.beskrivelse ?? null,
-  opgericht: r.stiftelsesdato ?? r.registreringsdatoEnhetsregisteret ?? null,
-  adres: join(arr(r.forretningsadresse?.adresse).join(' '), r.forretningsadresse?.postnummer, r.forretningsadresse?.poststed),
-  bron: 'Bronnoysund (data.brreg.no) - gratis, geen sleutel',
+  country: 'NO', name: r.navn ?? null,
+  number: r.organisasjonsnummer ?? null, number_type: 'Organisasjonsnummer',
+  status: r.konkurs ? 'bankrupt' : r.underAvvikling ? 'in liquidation' : 'active',
+  legal_form: r.organisasjonsform?.beskrivelse ?? null,
+  founded: r.stiftelsesdato ?? r.registreringsdatoEnhetsregisteret ?? null,
+  address: join(arr(r.forretningsadresse?.adresse).join(' '), r.forretningsadresse?.postnummer, r.forretningsadresse?.poststed),
+  source: 'Bronnoysund (data.brreg.no) - free, no key',
 });
 
 const dkRow = (r) => ({
-  land: 'DK', naam: r.name ?? null,
-  nummer: r.vat != null ? String(r.vat) : null, nummer_soort: 'CVR-nummer',
-  status: r.enddate ? 'beeindigd' : r.creditbankrupt ? 'faillissement' : 'actief',
-  rechtsvorm: r.companydesc ?? null,
-  opgericht: r.startdate ?? null,
-  adres: join(r.address, r.zipcode, r.city),
-  activiteit: r.industrydesc ?? null,
-  bron: 'CVR via cvrapi.dk - gratis, geen sleutel',
+  country: 'DK', name: r.name ?? null,
+  number: r.vat != null ? String(r.vat) : null, number_type: 'CVR number',
+  status: r.enddate ? 'ended' : r.creditbankrupt ? 'bankrupt' : 'active',
+  legal_form: r.companydesc ?? null,
+  founded: r.startdate ?? null,
+  address: join(r.address, r.zipcode, r.city),
+  activity: r.industrydesc ?? null,
+  source: 'CVR via cvrapi.dk - free, no key',
 });
 
 const eeRow = (r) => ({
-  land: 'EE', naam: r.name ?? null,
-  nummer: r.reg_code != null ? String(r.reg_code) : null, nummer_soort: 'Registrikood',
-  status: null, adres: null,
-  bron: 'Ariregister (ariregister.rik.ee) - gratis, geen sleutel',
+  country: 'EE', name: r.name ?? null,
+  number: r.reg_code != null ? String(r.reg_code) : null, number_type: 'Registrikood',
+  status: null, address: null,
+  source: 'Ariregister (ariregister.rik.ee) - free, no key',
 });
 
 const plRow = (s) => ({
-  land: 'PL', naam: s.name ?? null,
-  nummer: s.nip ?? null, nummer_soort: 'NIP',
+  country: 'PL', name: s.name ?? null,
+  number: s.nip ?? null, number_type: 'NIP',
   regon: s.regon ?? null,
-  status: s.statusVat === 'Czynny' ? 'actief (btw-plichtig)' : (s.statusVat ?? null),
-  adres: s.workingAddress || s.residenceAddress || null,
-  bron: 'Wykaz podatnikow VAT (wl-api.mf.gov.pl) - gratis, geen sleutel',
+  status: s.statusVat === 'Czynny' ? 'active (VAT registered)' : (s.statusVat ?? null),
+  address: s.workingAddress || s.residenceAddress || null,
+  source: 'Wykaz podatnikow VAT (wl-api.mf.gov.pl) - free, no key',
 });
 
 const EU_CAVEAT =
-  'Elk land heeft zijn eigen register met eigen velden en eigen actualiteit; de velden ' +
-  'zijn hier gelijkgetrokken, de brondekking niet. Een leeg resultaat betekent geen ' +
-  'treffer in dat ene register, niet dat het bedrijf niet bestaat. Zie eu_company_sources ' +
-  'voor welke landen geen gratis API hebben.';
+  'Every country has its own register, its own fields and its own update cadence. The ' +
+  'fields are normalised here; the coverage is not. An empty result means no hit in that ' +
+  'one register, not that the company does not exist. See eu_company_sources for which ' +
+  'countries have no free API at all.';
 
 async function tEuSearch(a) {
-  const q = (a.naam || '').trim();
-  if (!q) throw new Error('naam is verplicht');
+  const q = (a.name || '').trim();
+  if (!q) throw new Error('name is required');
   const n = Math.min(Number(a.max_results) || 10, 50);
-  const wanted = a.land
-    ? [String(a.land).toUpperCase()]
+  const wanted = a.country
+    ? [String(a.country).toUpperCase()]
     : Object.keys(EU_REGISTERS).filter((c) => EU_REGISTERS[c].byName);
 
   const unknown = wanted.filter((c) => !EU_REGISTERS[c]);
   if (unknown.length) {
-    const why = unknown.map((c) => `${c}: ${EU_NO_FREE_API[c] || 'onbekende landcode'}`).join('; ');
-    throw new Error(`geen gratis register voor ${unknown.join(', ')} — ${why}`);
+    const why = unknown.map((c) => `${c}: ${EU_NO_FREE_API[c] || 'unknown country code'}`).join('; ');
+    throw new Error(`no free register for ${unknown.join(', ')} — ${why}`);
   }
   const searchable = wanted.filter((c) => EU_REGISTERS[c].byName);
   if (!searchable.length) {
-    throw new Error(`${wanted.join(', ')} ondersteunt geen zoeken op naam. ${EU_REGISTERS[wanted[0]]?.note || ''}`.trim());
+    throw new Error(`${wanted.join(', ')} does not support search by name. ${EU_REGISTERS[wanted[0]]?.note || ''}`.trim());
   }
 
   const settled = await Promise.all(searchable.map(async (cc) => {
     try {
-      const { totaal, rows } = await EU_REGISTERS[cc].byName(q, n);
+      const { total, rows } = await EU_REGISTERS[cc].byName(q, n);
       // Some registers ignore their own limit parameter (SK, EE), so the cap is
-      // enforced here as well. totaal still reports what the source matched.
-      return { cc, totaal, rows: rows.slice(0, n), afgekapt: Math.max(0, rows.length - n) };
+      // enforced here as well. `total` still reports what the source matched.
+      return { cc, total, rows: rows.slice(0, n), truncated: Math.max(0, rows.length - n) };
     } catch (e) {
-      return { cc, fout: e?.message || String(e) };
+      return { cc, error: e?.message || String(e) };
     }
   }));
 
-  const resultaten = settled.flatMap((s) => s.rows || []);
-  const mislukt = settled.filter((s) => s.fout).map((s) => ({ land: s.cc, fout: s.fout }));
+  const results = settled.flatMap((s) => s.rows || []);
+  const failed = settled.filter((s) => s.error).map((s) => ({ country: s.cc, error: s.error }));
   return {
-    zoekterm: q,
-    gezocht_in: searchable.map((c) => `${c} (${EU_REGISTERS[c].land})`),
-    treffers: resultaten.length,
-    per_land: Object.fromEntries(settled.map((s) => [
+    query: q,
+    searched: searchable.map((c) => `${c} (${EU_REGISTERS[c].country_name})`),
+    hits: results.length,
+    per_country: Object.fromEntries(settled.map((s) => [
       s.cc,
-      s.fout ? 'FOUT' : { in_register: s.totaal ?? 0, geleverd: (s.rows || []).length },
+      s.error ? 'ERROR' : { in_register: s.total ?? 0, returned: (s.rows || []).length },
     ])),
-    resultaten,
-    registers_niet_bereikbaar: mislukt,
-    overgeslagen_geen_naamzoeken: wanted.filter((c) => !EU_REGISTERS[c].byName)
-      .map((c) => ({ land: c, reden: EU_REGISTERS[c].note })),
-    let_op: EU_CAVEAT,
+    results,
+    registers_unreachable: failed,
+    skipped_no_name_search: wanted.filter((c) => !EU_REGISTERS[c].byName)
+      .map((c) => ({ country: c, reason: EU_REGISTERS[c].note })),
+    note: EU_CAVEAT,
   };
 }
 
 async function tEuByNumber(a) {
-  const cc = String(a.land || '').toUpperCase();
-  const id = String(a.nummer || '').trim();
-  if (!cc || !id) throw new Error('land en nummer zijn beide verplicht, bijv. land="CZ", nummer="00177041"');
+  const cc = String(a.country || '').toUpperCase();
+  const id = String(a.number || '').trim();
+  if (!cc || !id) throw new Error('country and number are both required, e.g. country="CZ", number="00177041"');
   const reg = EU_REGISTERS[cc];
-  if (!reg) throw new Error(`geen gratis register voor ${cc} — ${EU_NO_FREE_API[cc] || 'onbekende landcode'}`);
+  if (!reg) throw new Error(`no free register for ${cc} — ${EU_NO_FREE_API[cc] || 'unknown country code'}`);
   if (!reg.byNumber) {
-    throw new Error(`${cc} (${reg.land}) ondersteunt opzoeken op nummer niet in deze bron; gebruik eu_company_search op naam`);
+    throw new Error(`${cc} (${reg.country_name}) does not support lookup by number in this source; use eu_company_search by name`);
   }
   const { rows } = await reg.byNumber(id);
   return {
-    land: cc, register: reg.register, gezocht_nummer: id,
-    resultaat: rows[0] ?? null,
-    let_op: EU_CAVEAT,
+    country: cc, register: reg.register, number: id,
+    result: rows[0] ?? null,
+    note: EU_CAVEAT,
   };
 }
 
 async function tEuSources() {
   return {
-    gratis_registers: Object.entries(EU_REGISTERS).map(([cc, r]) => ({
-      land: cc, naam: r.land, register: r.register, identifier: r.id,
-      zoeken_op_naam: Boolean(r.byName), opzoeken_op_nummer: Boolean(r.byNumber),
-      opmerking: r.note ?? null,
+    free_registers: Object.entries(EU_REGISTERS).map(([cc, r]) => ({
+      country: cc, country_name: r.country_name, register: r.register, identifier: r.id,
+      by_name: Boolean(r.byName), by_number: Boolean(r.byNumber),
+      note: r.note ?? null,
     })),
-    geen_gratis_api: Object.entries(EU_NO_FREE_API).map(([cc, reden]) => ({ land: cc, reden })),
-    aanvullend: [
-      'vat_check — elk EU-btw-nummer, officiele naam en adres via VIES',
-      'company_search / company_detail — wereldwijd via GLEIF, alleen partijen met een LEI',
-      'nl_company_* — Nederlands Handelsregister, betaald, credentials vereist',
+    no_free_api: Object.entries(EU_NO_FREE_API).map(([cc, reason]) => ({ country: cc, reason })),
+    also_available: [
+      'vat_check — any EU VAT number, official name and address via VIES',
+      'company_search / company_detail — worldwide via GLEIF, LEI holders only',
+      'nl_company_* — Dutch Handelsregister, paid, credentials required',
     ],
-    let_op: EU_CAVEAT,
+    note: EU_CAVEAT,
   };
 }
 
@@ -644,36 +857,36 @@ const TOOLS = [
   {
     name: 'tm_clearance',
     description:
-      'Merkcheck op een naam in EU en Benelux. Geeft een oordeel plus drie lijsten: ' +
-      'identieke levende merken, identieke verlopen merken, en levende gelijkende ' +
-      'rechten in jouw Nice-klassen. Begin hiermee.',
+      'Clearance check on a name in the EU and Benelux registers. Returns a verdict plus ' +
+      'three lists: identical live marks, identical expired marks, and live similar ' +
+      'rights in your Nice classes. Start here.',
     inputSchema: {
       type: 'object',
       properties: {
-        naam: { type: 'string', description: 'De naam die je wilt checken' },
+        name: { type: 'string', description: 'The name to clear' },
         nice_classes: {
           type: 'array', items: { type: 'integer' },
-          description: 'Jouw klassen, standaard [9, 42] (software en SaaS)',
+          description: 'Your classes; defaults to [9, 42] (software and SaaS)',
         },
       },
-      required: ['naam'],
+      required: ['name'],
     },
   },
   {
     name: 'tm_search',
     description:
-      'Zoek merken in TMview. Standaard EU + Benelux en alleen levende rechten. ' +
-      'Zet wereldwijd=true voor alle nationale registers.',
+      'Search trademarks in TMview. Defaults to EU + Benelux and live rights only. Set ' +
+      'worldwide=true to search every national register.',
     inputSchema: {
       type: 'object',
       properties: {
-        query: { type: 'string' },
+        query: { type: 'string', description: 'Substring search on the verbal element' },
         offices: {
           type: 'array', items: { type: 'string' },
-          description: 'Registercodes, bijv. ["EM","BX","DE"]. Standaard EU+Benelux.',
+          description: 'Register codes, e.g. ["EM","BX","DE"]. Defaults to EU + Benelux.',
         },
-        wereldwijd: { type: 'boolean', description: 'Alle TMview-registers' },
-        alleen_levend: { type: 'boolean', description: 'Standaard true' },
+        worldwide: { type: 'boolean', description: 'Search every TMview register' },
+        live_only: { type: 'boolean', description: 'Defaults to true' },
         nice_classes: { type: 'array', items: { type: 'integer' } },
         max_results: { type: 'integer' },
       },
@@ -683,99 +896,156 @@ const TOOLS = [
   {
     name: 'tm_detail',
     description:
-      'Volledig EUIPO-dossier bij een EU-aanvraagnummer: status, data, geldigheidsduur, ' +
-      'vernieuwingen, houder, opposities en de complete waren- en dienstenlijst per ' +
-      'klasse. Alleen EU-merken.',
+      'Full EUIPO case file for an EU application number: status, dates, validity, ' +
+      'renewals, holder, oppositions and the complete goods-and-services text per ' +
+      'class. EU marks only.',
     inputSchema: {
       type: 'object',
-      properties: { nummer: { type: 'string', description: 'EU-aanvraagnummer, bijv. 000039800' } },
-      required: ['nummer'],
+      properties: { number: { type: 'string', description: 'EU application number, e.g. 000039800' } },
+      required: ['number'],
     },
   },
   {
     name: 'tm_offices',
-    description: 'Lijst met beschikbare registers en hun codes.',
+    description: 'List the available trademark registers and their codes.',
     inputSchema: { type: 'object', properties: {} },
   },
   {
     name: 'company_search',
     description:
-      'Zoek een bedrijf op naam in GLEIF: rechtsvorm, status, adres, nationaal ' +
-      'registratienummer en LEI. Handig om een merkhouder te identificeren. Alleen ' +
-      'entiteiten met een LEI — veel MKB staat er niet in.',
+      'Find a company by name in GLEIF: legal form, status, address, national ' +
+      'registration number and LEI. Useful for identifying a trademark holder. Covers ' +
+      'only entities that hold a LEI — many SMEs do not.',
     inputSchema: {
       type: 'object',
       properties: {
-        naam: { type: 'string', description: 'Bedrijfsnaam of deel daarvan' },
-        land: { type: 'string', description: 'ISO-landcode om op te filteren, bijv. "DE" of "NL"' },
-        max_results: { type: 'integer', description: 'Standaard 10, maximaal 50' },
+        name: { type: 'string', description: 'Company name or part of it' },
+        country: { type: 'string', description: 'ISO country code to narrow by, e.g. "DE" or "NL"' },
+        max_results: { type: 'integer', description: 'Defaults to 10, capped at 50' },
       },
-      required: ['naam'],
+      required: ['name'],
     },
   },
   {
     name: 'company_detail',
     description:
-      'Volledig GLEIF-dossier bij een LEI, inclusief concernstructuur: directe moeder, ' +
-      'uiteindelijke moeder en dochterondernemingen.',
+      'Full GLEIF record for a LEI, including group structure: direct parent, ultimate ' +
+      'parent and subsidiaries.',
     inputSchema: {
       type: 'object',
-      properties: { lei: { type: 'string', description: 'LEI van 20 tekens, bijv. 5493005XXPWUMR2E5305' } },
+      properties: { lei: { type: 'string', description: '20-character LEI, e.g. 5493005XXPWUMR2E5305' } },
       required: ['lei'],
     },
   },
   {
     name: 'vat_check',
     description:
-      'Verifieer een EU-btw-nummer bij VIES en krijg de officiele naam en het adres ' +
-      'terug. Bevestigt of een bedrijf echt bestaat en actief is. Zoeken op naam kan ' +
-      'niet — je hebt het nummer nodig.',
+      'Verify an EU VAT number against VIES and get the officially registered name and ' +
+      'address back. Confirms a company exists and is active. Cannot be searched by ' +
+      'name — you need the number.',
     inputSchema: {
       type: 'object',
       properties: {
-        btw_nummer: { type: 'string', description: 'Met landcode, bijv. NL123456789B01' },
-        land: { type: 'string', description: 'Landcode, als die niet in btw_nummer zit' },
+        vat_number: { type: 'string', description: 'With country code, e.g. NL123456789B01' },
+        country: { type: 'string', description: 'Country code, if not part of vat_number' },
       },
-      required: ['btw_nummer'],
+      required: ['vat_number'],
     },
   },
   {
     name: 'eu_company_search',
     description:
-      'Zoek een bedrijf op naam in de nationale handelsregisters van Tsjechie, ' +
-      'Slowakije, Finland, Frankrijk, Noorwegen, Denemarken en Estland. Gratis, geen ' +
-      'sleutel. Laat land weg om alle zeven tegelijk te zoeken.',
+      'Search the national company registers of Czechia, Slovakia, Finland, France, ' +
+      'Norway, Denmark and Estonia by name. Free, no API key. Omit country to search ' +
+      'all seven at once.',
     inputSchema: {
       type: 'object',
       properties: {
-        naam: { type: 'string', description: 'Bedrijfsnaam of deel daarvan' },
-        land: { type: 'string', description: 'ISO-landcode, bijv. "CZ". Weglaten = alle landen tegelijk' },
-        max_results: { type: 'integer', description: 'Per land, standaard 10, maximaal 50' },
+        name: { type: 'string', description: 'Company name or part of it' },
+        country: { type: 'string', description: 'ISO country code, e.g. "CZ". Omit to search every register' },
+        max_results: { type: 'integer', description: 'Per country, defaults to 10, capped at 50' },
       },
-      required: ['naam'],
+      required: ['name'],
     },
   },
   {
     name: 'eu_company_by_number',
     description:
-      'Zoek een bedrijf op zijn nationale registratienummer. Tsjechie op ICO, Polen op ' +
-      'NIP of REGON — bij Polen is dit de enige route, want zoeken op naam kan daar niet.',
+      'Look a company up by its national registration number. Czechia by ICO, Poland by ' +
+      'NIP or REGON — for Poland this is the only route, since it offers no name search.',
     inputSchema: {
       type: 'object',
       properties: {
-        land: { type: 'string', description: 'ISO-landcode, bijv. "CZ" of "PL"' },
-        nummer: { type: 'string', description: 'Nationaal registratienummer' },
+        country: { type: 'string', description: 'ISO country code, e.g. "CZ" or "PL"' },
+        number: { type: 'string', description: 'National registration number' },
       },
-      required: ['land', 'nummer'],
+      required: ['country', 'number'],
     },
   },
   {
     name: 'eu_company_sources',
     description:
-      'Welke landen hebben een gratis register, welke identifier hoort erbij, en welke ' +
-      'landen hebben er geen — met de reden. Lees dit voordat je een leeg resultaat als ' +
-      '"bestaat niet" uitlegt.',
+      'Which countries have a free register, which identifier each uses, and which ' +
+      'countries have none — with the reason. Read this before reading an empty result ' +
+      'as "does not exist".',
     inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'nl_company_search',
+    description:
+      'Find a Dutch company in the Handelsregister by trade name, city, postal code or ' +
+      'domain, and get its KVK number back. Covers the SMEs that GLEIF misses. PAID: ' +
+      'requires Company.info credentials in the environment.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Trade name or part of it' },
+        city: { type: 'string' },
+        postal_code: { type: 'string' },
+        domain: { type: 'string', description: 'Domain name, e.g. example.nl' },
+        kvk_number: { type: 'string', description: 'KVK number, if you already have it' },
+        strict: { type: 'boolean', description: 'Exact rather than partial match' },
+        page: { type: 'integer', description: 'Defaults to 1; 20 results per page' },
+      },
+    },
+  },
+  {
+    name: 'nl_company_profile',
+    description:
+      'Full Handelsregister profile for a KVK number: legal name, all trade names, ' +
+      'legal form, RSIN and addresses. For trademark work the trade names are the most ' +
+      'important field. PAID.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        kvk_number: { type: 'string', description: '8-digit KVK number' },
+        establishment_number: { type: 'string', description: 'Optional, for one specific establishment' },
+      },
+      required: ['kvk_number'],
+    },
+  },
+  {
+    name: 'nl_company_vat',
+    description:
+      'VAT number for a KVK number. Combine with vat_check to confirm the name for free ' +
+      'via EU VIES. PAID.',
+    inputSchema: {
+      type: 'object',
+      properties: { kvk_number: { type: 'string' } },
+      required: ['kvk_number'],
+    },
+  },
+  {
+    name: 'nl_company_tree',
+    description:
+      'Group structure for a KVK number: parents, subsidiaries and UBO as a tree. Where ' +
+      'GLEIF stops because an entity holds no LEI, this keeps going. NOTE: contains ' +
+      'personal data. PAID.',
+    inputSchema: {
+      type: 'object',
+      properties: { kvk_number: { type: 'string' } },
+      required: ['kvk_number'],
+    },
   },
 ];
 
@@ -783,6 +1053,8 @@ const HANDLERS = {
   tm_search: tSearch, tm_detail: tDetail,
   tm_clearance: tClearance, tm_offices: tOffices,
   company_search: tCompanySearch, company_detail: tCompanyDetail, vat_check: tVatCheck,
+  nl_company_search: tNlSearch, nl_company_profile: tNlProfile,
+  nl_company_vat: tNlVat, nl_company_tree: tNlTree,
   eu_company_search: tEuSearch, eu_company_by_number: tEuByNumber,
   eu_company_sources: tEuSources,
 };
@@ -807,17 +1079,17 @@ async function handle(req) {
     } else if (method === 'tools/call') {
       const p = req.params || {};
       const fn = HANDLERS[p.name];
-      if (!fn) throw new Error(`onbekende tool: ${p.name}`);
+      if (!fn) throw new Error(`unknown tool: ${p.name}`);
       const out = await fn(p.arguments || {});
       result = { content: [{ type: 'text', text: JSON.stringify(out, null, 2) }] };
     } else {
-      return send({ jsonrpc: '2.0', id, error: { code: -32601, message: `onbekende methode: ${method}` } });
+      return send({ jsonrpc: '2.0', id, error: { code: -32601, message: `unknown method: ${method}` } });
     }
     send({ jsonrpc: '2.0', id, result });
   } catch (e) {
     const msg = e?.message || String(e);
     if (method === 'tools/call') {
-      send({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: `FOUT: ${msg}` }], isError: true } });
+      send({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: `ERROR: ${msg}` }], isError: true } });
     } else {
       send({ jsonrpc: '2.0', id, error: { code: -32603, message: msg } });
     }
