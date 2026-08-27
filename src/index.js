@@ -7,10 +7,7 @@
  *   EUIPO eSearch (full case file)     https://euipo.europa.eu/copla/trademark/data/{nr}
  *   GLEIF (company identity, groups)   https://api.gleif.org/api/v1
  *   EU VIES (VAT verification)         https://ec.europa.eu/taxation_customs/vies/rest-api
- *   National registers (8 countries)   see EU_REGISTERS below
- *
- * Optional, paid, credentials via environment only (never committed):
- *   Company.info / Webservices.nl      Dutch Handelsregister — see README
+ *   National registers (16 countries)  see EU_REGISTERS below
  *
  * Optional, paid, credentials via environment only (never committed):
  *   Company.info / Webservices.nl      Dutch Handelsregister — see README
@@ -21,7 +18,7 @@
 
 const PROTOCOL = '2025-06-18';
 const NAME = 'ip-free-mcp';
-const VERSION = '1.5.0';
+const VERSION = '1.6.0';
 
 const UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
@@ -432,6 +429,42 @@ function xmlToObj(xml) {
 /** Always give me a list, whether the parser saw one item or many. */
 const arr = (v) => (v == null || v === '' ? [] : Array.isArray(v) ? v : [v]);
 
+/**
+ * POST a hand-built SOAP envelope and return the parsed <Body>. Same reason as
+ * xmlToObj: a SOAP client would break the zero-dependency promise. A
+ * <faultstring> is a definite answer, so it is thrown at once and not retried;
+ * transport trouble is retried like every other call.
+ */
+async function soapPost(url, action, envelope, tries = 3) {
+  let last;
+  for (let n = 0; n < tries; n++) {
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/xml; charset=utf-8', SOAPAction: action, 'User-Agent': UA },
+        body: envelope,
+        signal: AbortSignal.timeout(90_000),
+      });
+      const text = await res.text();
+      const fault = /<(?:\w+:)?faultstring[^>]*>([\s\S]*?)<\/(?:\w+:)?faultstring>/.exec(text);
+      if (fault) {
+        const e = new Error(xmlDecode(fault[1]).trim() || `SOAP fault (HTTP ${res.status})`);
+        e.soapFault = true;
+        throw e;
+      }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return xmlToObj(text)?.Envelope?.Body ?? {};
+    } catch (e) {
+      last = e;
+      if (e?.soapFault) break;
+      if (n < tries - 1) await sleep(1500 * (n + 1));
+    }
+  }
+  const op = action.split('/').pop();
+  if (last?.soapFault) throw new Error(`${url} rejected ${op}: ${last.message}`);
+  throw new Error(`${url} (${op}) unreachable after ${tries} attempts: ${last?.message || last}`);
+}
+
 async function soapCall(op, fields) {
   const { user, pass, url } = ciConfig();
   const inner = Object.entries(fields)
@@ -592,7 +625,116 @@ const current = (list, endKey = 'validTo') => {
   return a.find((x) => !x?.[endKey]) || a[a.length - 1] || null;
 };
 
+const day = (v) => (v ? String(v).slice(0, 10) : null);
+
+/* ---- CKAN datastores ------------------------------------------------
+ * Ireland, Latvia and Slovenia all publish their register as a CKAN
+ * datastore, so they share one client. `q` is full text over every column;
+ * `filters` is an exact match on named columns.
+ * -------------------------------------------------------------------- */
+
+const CKAN = {
+  IE: { base: 'https://opendata.cro.ie', resource: '3fef41bc-b8f4-4b10-8434-ce51c29b1bba' },
+  LV: { base: 'https://data.gov.lv/dati/lv', resource: '25e80bf3-f107-4ab4-89ef-251b5b9374e9' },
+  SI: { base: 'https://podatki.gov.si', resource: 'beb70929-3d0d-41c6-9af2-25d525d906d3' },
+};
+
+async function ckan(cc, params) {
+  const { base, resource } = CKAN[cc];
+  const qs = new URLSearchParams({ resource_id: resource, ...params });
+  const d = await http(`${base}/api/3/action/datastore_search?${qs}`,
+    { headers: { 'User-Agent': APP_UA } });
+  if (d?.success !== true) {
+    const why = d?.error?.message || d?.error?.info?.orig || JSON.stringify(d?.error ?? d);
+    throw new Error(`${cc}: the CKAN datastore refused the query — ${why}`);
+  }
+  return { total: d.result?.total ?? 0, records: arr(d.result?.records) };
+}
+
+/* ---- Swiss UID register (SOAP) --------------------------------------
+ * The federal UID register speaks eCH-0108 over doc-literal SOAP and needs
+ * no credentials for the public operations. Envelopes are hand-built for
+ * the same reason as Company.info's: no dependencies.
+ * -------------------------------------------------------------------- */
+
+const CH_WSE = 'https://www.uid-wse.admin.ch/V5.0/PublicServices.svc';
+const CH_NS = {
+  u: 'http://www.uid.admin.ch/xmlns/uid-wse',
+  u5: 'http://www.uid.admin.ch/xmlns/uid-wse/5',
+  sh: 'http://www.uid.admin.ch/xmlns/uid-wse-shared/2',
+  e97: 'http://www.ech.ch/xmlns/eCH-0097/5',
+};
+
+const chEnvelope = (inner) =>
+  '<?xml version="1.0" encoding="utf-8"?>' +
+  '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" ' +
+  Object.entries(CH_NS).map(([p, ns]) => `xmlns:${p}="${ns}"`).join(' ') +
+  `><soap:Body>${inner}</soap:Body></soap:Envelope>`;
+
+const chAction = (op) => `${CH_NS.u}/IPublicServices/${op}`;
+
+// A UID is nine digits; the register prints it as CHE-105.909.036.
+const cheUid = (d) => {
+  const s = String(d ?? '').replace(/\D/g, '');
+  return s.length === 9 ? `CHE-${s.slice(0, 3)}.${s.slice(3, 6)}.${s.slice(6)}` : (s || null);
+};
+
+// eCH-0108 uidregStatusEnterpriseDetail. Only these two are confirmed against
+// live records; every other code is reported raw rather than guessed at.
+const CH_STATUS = { 3: 'active', 5: 'ended' };
+
 const EU_REGISTERS = {
+  AT: {
+    country_name: 'Austria', register: 'Firmenbuch via JustizOnline', id: 'Firmenbuchnummer',
+    note:
+      'JustizOnline is the courts\' own public look-up. It gives name, ' +
+      'Firmenbuchnummer, status and the registered seat — no street address and no ' +
+      'founding date. It is an application backend rather than a documented API, so ' +
+      'treat it as liable to change. A full Firmenbuch extract is still paid.',
+    async byName(q, n) {
+      const d = await http(`https://justizonline.gv.at/jop/service/fba/search?term=${encodeURIComponent(q)}`,
+        { headers: { 'User-Agent': APP_UA } });
+      return { total: d.numResults ?? arr(d.companies).length, rows: arr(d.companies).slice(0, n).map(atRow) };
+    },
+    async byNumber(id) {
+      const d = await http(`https://justizonline.gv.at/jop/service/fba/search?term=${encodeURIComponent(String(id).trim())}`,
+        { headers: { 'User-Agent': APP_UA } });
+      return { total: d.numResults ?? 0, rows: arr(d.companies).map(atRow) };
+    },
+  },
+  CH: {
+    country_name: 'Switzerland', register: 'UID register (eCH-0108 SOAP)', id: 'UID (CHE)',
+    note:
+      'The federal UID register, not the 26 cantonal commercial registers. It holds ' +
+      'every entity with a UID, including ones never entered in a commercial ' +
+      'register, and carries the CH.HR number where there is one. Status is the ' +
+      'eCH-0108 code; only 3 (active) and 5 (ended) are mapped, the rest are ' +
+      'reported as their raw code rather than guessed at.',
+    async byName(q, n) {
+      const body = await soapPost(CH_WSE, chAction('Search'), chEnvelope(
+        '<u:Search><u:searchParameters><u5:uidEntitySearchParameters>' +
+        `<u5:organisationName>${xmlEscape(q)}</u5:organisationName>` +
+        '</u5:uidEntitySearchParameters></u:searchParameters><u:config>' +
+        `<sh:searchMode>Normal</sh:searchMode><sh:maxNumberOfRecords>${Math.min(n, 100)}</sh:maxNumberOfRecords>` +
+        '<sh:searchNameAndAddressHistory>false</sh:searchNameAndAddressHistory>' +
+        '</u:config></u:Search>'));
+      const items = arr(body?.SearchResponse?.SearchResult?.uidEntitySearchResultItem);
+      return { total: items.length, rows: items.map((i) => chRow(i?.organisation)) };
+    },
+    async byNumber(id) {
+      const digits = String(id).replace(/\D/g, '');
+      if (digits.length !== 9) {
+        throw new Error(`"${id}" is not a Swiss UID; nine digits are expected, e.g. CHE-105.909.036`);
+      }
+      const body = await soapPost(CH_WSE, chAction('GetByUID'), chEnvelope(
+        '<u:GetByUID><u:uid>' +
+        '<e97:uidOrganisationIdCategorie>CHE</e97:uidOrganisationIdCategorie>' +
+        `<e97:uidOrganisationId>${digits}</e97:uidOrganisationId>` +
+        '</u:uid></u:GetByUID>'));
+      const items = arr(body?.GetByUIDResponse?.GetByUIDResult?.organisationType);
+      return { total: items.length, rows: items.map(chRow) };
+    },
+  },
   CZ: {
     country_name: 'Czechia', register: 'ARES (Ministry of Finance)', id: 'ICO',
     async byName(q, n) {
@@ -603,34 +745,6 @@ const EU_REGISTERS = {
     async byNumber(id) {
       const d = await http(`https://ares.gov.cz/ekonomicke-subjekty-v-be/rest/ekonomicke-subjekty/${encodeURIComponent(id)}`);
       return { total: 1, rows: [czRow(d)] };
-    },
-  },
-  SK: {
-    country_name: 'Slovakia', register: 'RPO (Statistical Office)', id: 'ICO',
-    async byName(q, n) {
-      const d = await http(`https://api.statistics.sk/rpo/v1/search?fullName=${encodeURIComponent(q)}&limit=${Math.min(n, 100)}`);
-      return { total: arr(d.results).length, rows: arr(d.results).map(skRow) };
-    },
-  },
-  FI: {
-    country_name: 'Finland', register: 'PRH avoindata', id: 'Business ID',
-    async byName(q, n) {
-      const d = await http(`https://avoindata.prh.fi/opendata-ytj-api/v3/companies?name=${encodeURIComponent(q)}`);
-      return { total: d.totalResults ?? arr(d.companies).length, rows: arr(d.companies).slice(0, n).map(fiRow) };
-    },
-  },
-  FR: {
-    country_name: 'France', register: 'recherche-entreprises (INSEE/RNE)', id: 'SIREN',
-    async byName(q, n) {
-      const d = await http(`https://recherche-entreprises.api.gouv.fr/search?q=${encodeURIComponent(q)}&per_page=${Math.min(n, 25)}`);
-      return { total: d.total_results ?? arr(d.results).length, rows: arr(d.results).map(frRow) };
-    },
-  },
-  NO: {
-    country_name: 'Norway', register: 'Bronnoysund Enhetsregisteret', id: 'Organisasjonsnummer',
-    async byName(q, n) {
-      const d = await http(`https://data.brreg.no/enhetsregisteret/api/enheter?navn=${encodeURIComponent(q)}&size=${Math.min(n, 100)}`);
-      return { total: d.page?.totalElements ?? 0, rows: arr(d._embedded?.enheter).map(noRow) };
     },
   },
   DK: {
@@ -650,6 +764,103 @@ const EU_REGISTERS = {
       return { total: arr(d.data).length, rows: arr(d.data).map(eeRow) };
     },
   },
+  FI: {
+    country_name: 'Finland', register: 'PRH avoindata', id: 'Business ID',
+    async byName(q, n) {
+      const d = await http(`https://avoindata.prh.fi/opendata-ytj-api/v3/companies?name=${encodeURIComponent(q)}`);
+      return { total: d.totalResults ?? arr(d.companies).length, rows: arr(d.companies).slice(0, n).map(fiRow) };
+    },
+  },
+  FR: {
+    country_name: 'France', register: 'recherche-entreprises (INSEE/RNE)', id: 'SIREN',
+    async byName(q, n) {
+      const d = await http(`https://recherche-entreprises.api.gouv.fr/search?q=${encodeURIComponent(q)}&per_page=${Math.min(n, 25)}`);
+      return { total: d.total_results ?? arr(d.results).length, rows: arr(d.results).map(frRow) };
+    },
+  },
+  IE: {
+    country_name: 'Ireland', register: 'CRO open data (CKAN datastore)', id: 'CRO number',
+    note:
+      'The Companies Registration Office publishes its whole company file as a CKAN ' +
+      'datastore, refreshed daily. Search is full text over the record, so a common ' +
+      'word matches widely; results come back relevance-ranked.',
+    async byName(q, n) {
+      const { total, records } = await ckan('IE', { q, limit: String(Math.min(n, 100)) });
+      return { total, rows: records.map(ieRow) };
+    },
+    async byNumber(id) {
+      const { total, records } = await ckan('IE',
+        { filters: JSON.stringify({ company_num: String(id).replace(/\D/g, '') }), limit: '5' });
+      return { total, rows: records.map(ieRow) };
+    },
+  },
+  LT: {
+    country_name: 'Lithuania', register: 'Registru centras JAR via get.data.gov.lt',
+    id: 'Juridinio asmens kodas',
+    note:
+      'Status is derived from the deregistration date, because the register\'s own ' +
+      'status field is a reference into a table this dataset does not publish. The ' +
+      'address columns are empty for nearly every record.',
+    async byName(q, n) {
+      const base = 'https://get.data.gov.lt/datasets/gov/rc/jar/iregistruoti/JuridinisAsmuo';
+      const where = `lower(ja_pavadinimas).contains(${JSON.stringify(q.toLowerCase().replace(/"/g, ''))})`;
+      const hdr = { headers: { 'User-Agent': APP_UA } };
+      const [page, count] = await Promise.all([
+        http(`${base}?${where}&limit(${Math.min(n, 100)})`, hdr),
+        http(`${base}?${where}&select(count())`, hdr),
+      ]);
+      return {
+        total: Number(arr(count._data)[0]?.['count()'] ?? 0),
+        rows: arr(page._data).map(ltRow),
+      };
+    },
+    async byNumber(id) {
+      const code = String(id).replace(/\D/g, '');
+      const d = await http(
+        `https://get.data.gov.lt/datasets/gov/rc/jar/iregistruoti/JuridinisAsmuo?ja_kodas=${encodeURIComponent(code)}`,
+        { headers: { 'User-Agent': APP_UA } });
+      return { total: arr(d._data).length, rows: arr(d._data).map(ltRow) };
+    },
+  },
+  LV: {
+    country_name: 'Latvia', register: 'Uznemumu registrs open data (CKAN datastore)',
+    id: 'Registration number',
+    note:
+      'The commercial register\'s own daily open-data export, CC0. It lists branches ' +
+      '(filiale) alongside companies, so a bank name matches dozens of rows.',
+    async byName(q, n) {
+      const { total, records } = await ckan('LV', { q, limit: String(Math.min(n, 100)) });
+      return { total, rows: records.map(lvRow) };
+    },
+    async byNumber(id) {
+      const { total, records } = await ckan('LV',
+        { filters: JSON.stringify({ regcode: String(id).replace(/\D/g, '') }), limit: '5' });
+      return { total, rows: records.map(lvRow) };
+    },
+  },
+  MT: {
+    country_name: 'Malta', register: 'Malta Business Registry open API',
+    id: 'MBR registration number',
+    note:
+      'No name search: the /companies list endpoint accepts a limit but ignores every ' +
+      'filter parameter, so only look-up by registration number works, via ' +
+      'eu_company_by_number. The number keeps its space, e.g. "C 10" — this server ' +
+      'inserts it for you. The registry sits behind a WAF that rejects unrecognised ' +
+      'User-Agent strings and throttles bursts.',
+    async byNumber(id) {
+      const nr = String(id).trim().toUpperCase().replace(/^([A-Z]+)\s*/, '$1 ');
+      const d = await http(`https://openapi.baros.mbr.mt/api/v1/companies/${encodeURIComponent(nr)}`);
+      const rec = d?.data;
+      return { total: rec ? 1 : 0, rows: rec ? [mtRow(rec)] : [] };
+    },
+  },
+  NO: {
+    country_name: 'Norway', register: 'Bronnoysund Enhetsregisteret', id: 'Organisasjonsnummer',
+    async byName(q, n) {
+      const d = await http(`https://data.brreg.no/enhetsregisteret/api/enheter?navn=${encodeURIComponent(q)}&size=${Math.min(n, 100)}`);
+      return { total: d.page?.totalElements ?? 0, rows: arr(d._embedded?.enheter).map(noRow) };
+    },
+  },
   PL: {
     country_name: 'Poland', register: 'Wykaz podatnikow VAT (Ministry of Finance)', id: 'NIP or REGON',
     note: 'No name search; by NIP or REGON only, via eu_company_by_number.',
@@ -660,22 +871,111 @@ const EU_REGISTERS = {
       return { total: su ? 1 : 0, rows: su ? [plRow(su)] : [] };
     },
   },
+  RO: {
+    country_name: 'Romania', register: 'ANAF', id: 'CUI',
+    note:
+      'No name search; by CUI only, via eu_company_by_number. ANAF is the tax ' +
+      'authority, so the record is the fiscal one — but it carries the ONRC trade ' +
+      'register number, the legal form and the registered seat. One request per second.',
+    async byNumber(id) {
+      const cui = String(id).replace(/\D/g, '');
+      if (!cui) throw new Error(`"${id}" is not a Romanian CUI`);
+      const d = await http('https://webservicesp.anaf.ro/api/PlatitorTvaRest/v9/tva',
+        { body: JSON.stringify([{ cui: Number(cui), data: today() }]), headers: { 'User-Agent': APP_UA } });
+      const found = arr(d.found);
+      return { total: found.length, rows: found.map(roRow) };
+    },
+  },
+  SI: {
+    country_name: 'Slovenia', register: 'AJPES PRS open data (CKAN datastore)',
+    id: 'Maticna stevilka',
+    note:
+      'The business register export: sole traders, companies, associations and ' +
+      'business units (poslovna enota) in one table, keyed on the maticna stevilka. ' +
+      'It has no status column at all, so status is reported as null rather than ' +
+      'assumed active. Search is full text over the record.',
+    async byName(q, n) {
+      const { total, records } = await ckan('SI', { q, limit: String(Math.min(n, 100)) });
+      return { total, rows: records.map(siRow) };
+    },
+    async byNumber(id) {
+      const { total, records } = await ckan('SI',
+        { filters: JSON.stringify({ 'Matična številka': String(id).replace(/\D/g, '') }), limit: '5' });
+      return { total, rows: records.map(siRow) };
+    },
+  },
+  SK: {
+    country_name: 'Slovakia', register: 'RPO (Statistical Office)', id: 'ICO',
+    async byName(q, n) {
+      const d = await http(`https://api.statistics.sk/rpo/v1/search?fullName=${encodeURIComponent(q)}&limit=${Math.min(n, 100)}`);
+      return { total: arr(d.results).length, rows: arr(d.results).map(skRow) };
+    },
+  },
 };
 
 // Countries with no free keyless register, and why. Reported, not hidden.
+// Where VIES can still turn a number into a name for free, that is said here
+// too — see VIES_NAME_LOOKUP.
 const EU_NO_FREE_API = {
-  AT: 'Firmenbuch is paid', BE: 'KBO is a bulk open-data file or a web form only',
-  BG: 'no public API', CH: 'Zefix now requires authentication (HTTP 401)',
-  CY: 'no public API', DE: 'Handelsregister has no free API; offeneregister.de is out of service',
-  ES: 'Registro Mercantil is paid', GR: 'GEMI requires an API key',
-  HR: 'sudreg-api does not respond', HU: 'no public API',
-  IE: 'CRO requires API credentials', IS: 'no public API',
-  IT: 'Registro Imprese is paid', LT: 'bulk open-data file only',
-  LU: 'LBR is paid', LV: 'bulk open-data file only', MT: 'MBR is paid',
+  BE: 'KBO publishes a monthly bulk file; there is no live public API',
+  BG: 'the Trade Register has no public API',
+  CY: 'the Registrar publishes a bulk file; there is no live public API',
+  DE: 'Handelsregister has no free API; offeneregister.de is out of service',
+  ES: 'Registro Mercantil is paid, and Spain suppresses the name in VIES too',
+  GR: 'GEMI requires an API key you have to apply for',
+  HR: 'sudreg-api requires credentials you have to apply for',
+  HU: 'the company register has no public API',
+  IS: 'the open-data licence forbids passing the data on, which is exactly what this server does',
+  IT: 'Registro Imprese is paid',
+  LU: 'LBR is paid',
   NL: 'KVK requires a subscription; see the nl_company_* tools',
-  PT: 'no public API', RO: 'ANAF endpoint not publicly reachable',
-  SE: 'Bolagsverket is paid', SI: 'AJPES has no public API',
+  PT: 'the register has no public API',
+  SE: 'Bolagsverket is paid, and no Swedish API supports search by name at any price',
   UK: 'Companies House is free but requires a (free) API key',
+};
+
+// Member states whose tax authority releases the registered name and address
+// through VIES. For these, vat_check is a free number-to-name look-up even
+// where the national register is shut. Verified live, one number each.
+const VIES_NAME_LOOKUP = {
+  HR: 'OIB', IT: 'partita IVA', PT: 'NIPC (the VAT number is the register number)',
+  SI: 'davcna stevilka',
+};
+
+const atRow = (r) => ({
+  country: 'AT', name: r.name ?? null,
+  number: r.fnr ?? null, number_type: 'Firmenbuchnummer',
+  status: r.status === 'ACTIVE' ? 'active' : (r.status ?? null),
+  seat: r.domicile ?? null,
+  address: null,
+  source: 'JustizOnline Firmenbuch-Abfrage (justizonline.gv.at) - free, no key',
+});
+
+const chRow = (o) => {
+  const org = o?.organisation ?? {};
+  const ident = org.organisationIdentification ?? {};
+  const addr = arr(org.address).find((x) => x?.addressCategory === 'LEGAL') ?? arr(org.address)[0] ?? null;
+  const other = (cat) =>
+    arr(ident.OtherOrganisationId).find((x) => x?.organisationIdCategory === cat)?.organisationId ?? null;
+  const code = o?.uidregInformation?.uidregStatusEnterpriseDetail ?? null;
+  // Swiss town names often already carry the canton, e.g. "Neyruz FR".
+  const town = addr?.town ?? '';
+  const canton = addr?.cantonAbbreviation ?? null;
+  return {
+    country: 'CH',
+    name: ident.organisationLegalName || ident.organisationName || null,
+    number: cheUid(ident.uid?.uidOrganisationId), number_type: 'UID',
+    status: code == null ? null : (CH_STATUS[code] ?? `eCH-0108 code ${code}`),
+    legal_form_code: ident.legalForm ?? null,
+    commercial_register_number: other('CH.HR'),
+    address: addr
+      ? join(addr.addressLine1, addr.street, addr.houseNumber, addr.swissZipCode, town,
+        canton && town.endsWith(` ${canton}`) ? null : canton)
+      : null,
+    vat_number: o?.vatRegisterInformation?.uidVat?.uidOrganisationId
+      ? `${cheUid(o.vatRegisterInformation.uidVat.uidOrganisationId)} MWST` : null,
+    source: 'UID register (uid-wse.admin.ch) - free, no key',
+  };
 };
 
 const czRow = (r) => ({
@@ -690,18 +990,23 @@ const czRow = (r) => ({
   source: 'ARES (ares.gov.cz) - free, no key',
 });
 
-const skRow = (r) => {
-  const a = current(r.addresses);
-  return {
-    country: 'SK', name: current(r.fullNames)?.value ?? null,
-    number: current(r.identifiers)?.value ?? arr(r.identifiers)[0]?.value ?? null,
-    number_type: 'ICO',
-    status: r.termination ? 'ended' : 'active',
-    founded: r.establishment?.date ?? null,
-    address: a ? join(a.street, a.buildingNumber, arr(a.postalCodes)[0], a.municipality?.value) : null,
-    source: 'RPO (api.statistics.sk) - free, no key',
-  };
-};
+const dkRow = (r) => ({
+  country: 'DK', name: r.name ?? null,
+  number: r.vat != null ? String(r.vat) : null, number_type: 'CVR number',
+  status: r.enddate ? 'ended' : r.creditbankrupt ? 'bankrupt' : 'active',
+  legal_form: r.companydesc ?? null,
+  founded: r.startdate ?? null,
+  address: join(r.address, r.zipcode, r.city),
+  activity: r.industrydesc ?? null,
+  source: 'CVR via cvrapi.dk - free, no key',
+});
+
+const eeRow = (r) => ({
+  country: 'EE', name: r.name ?? null,
+  number: r.reg_code != null ? String(r.reg_code) : null, number_type: 'Registrikood',
+  status: null, address: null,
+  source: 'Ariregister (ariregister.rik.ee) - free, no key',
+});
 
 const fiRow = (r) => {
   const a = arr(r.addresses)[0];
@@ -729,6 +1034,53 @@ const frRow = (r) => ({
   source: 'recherche-entreprises.api.gouv.fr - free, no key',
 });
 
+const ieRow = (r) => {
+  const status = (r.company_status ?? '').trim();
+  return {
+    country: 'IE', name: (r.company_name ?? '').trim() || null,
+    number: r.company_num != null ? String(r.company_num) : null, number_type: 'CRO number',
+    status: r.comp_dissolved_date ? 'dissolved' : (/^normal$/i.test(status) ? 'active' : (status || null)),
+    legal_form: r.company_type ?? null,
+    founded: day(r.company_reg_date),
+    ended: day(r.comp_dissolved_date),
+    address: join(r.company_address_1, r.company_address_2, r.company_address_3, r.company_address_4, r.eircode),
+    activity: r.nace_v2_code ?? r.princ_object_code ?? null,
+    source: 'CRO open data (opendata.cro.ie) - free, no key',
+  };
+};
+
+const ltRow = (r) => ({
+  country: 'LT', name: r.ja_pavadinimas ?? null,
+  number: r.ja_kodas != null ? String(r.ja_kodas) : null, number_type: 'Juridinio asmens kodas',
+  status: r.isreg_data ? 'deregistered' : 'registered',
+  founded: r.reg_data ?? null,
+  ended: r.isreg_data ?? null,
+  address: r.pilnas_adresas || r.adresas || null,
+  source: 'Registru centras JAR (get.data.gov.lt) - free, no key',
+});
+
+const lvRow = (r) => ({
+  country: 'LV', name: r.name ?? null,
+  number: r.regcode != null ? String(r.regcode) : null, number_type: 'Registration number',
+  status: r.terminated ? 'ended' : 'active',
+  legal_form: r.type_text || r.regtype_text || null,
+  founded: day(r.registered),
+  ended: day(r.terminated),
+  address: r.address ?? null,
+  source: 'Uznemumu registrs open data (data.gov.lv) - free, no key',
+});
+
+const mtRow = (r) => ({
+  country: 'MT', name: r.name ?? null,
+  number: r.registration_number ?? null, number_type: 'MBR registration number',
+  status: /^active$/i.test(r.state ?? '') ? 'active' : (r.state ?? null),
+  legal_form: r.type ?? null,
+  founded: r.registration_date ?? null,
+  address: join(r.street, r.address, r.locality, r.postcode, r.country),
+  activity: r.area_of_activity ?? null,
+  source: 'Malta Business Registry (openapi.baros.mbr.mt) - free, no key',
+});
+
 const noRow = (r) => ({
   country: 'NO', name: r.navn ?? null,
   number: r.organisasjonsnummer ?? null, number_type: 'Organisasjonsnummer',
@@ -739,24 +1091,6 @@ const noRow = (r) => ({
   source: 'Bronnoysund (data.brreg.no) - free, no key',
 });
 
-const dkRow = (r) => ({
-  country: 'DK', name: r.name ?? null,
-  number: r.vat != null ? String(r.vat) : null, number_type: 'CVR number',
-  status: r.enddate ? 'ended' : r.creditbankrupt ? 'bankrupt' : 'active',
-  legal_form: r.companydesc ?? null,
-  founded: r.startdate ?? null,
-  address: join(r.address, r.zipcode, r.city),
-  activity: r.industrydesc ?? null,
-  source: 'CVR via cvrapi.dk - free, no key',
-});
-
-const eeRow = (r) => ({
-  country: 'EE', name: r.name ?? null,
-  number: r.reg_code != null ? String(r.reg_code) : null, number_type: 'Registrikood',
-  status: null, address: null,
-  source: 'Ariregister (ariregister.rik.ee) - free, no key',
-});
-
 const plRow = (s) => ({
   country: 'PL', name: s.name ?? null,
   number: s.nip ?? null, number_type: 'NIP',
@@ -765,6 +1099,49 @@ const plRow = (s) => ({
   address: s.workingAddress || s.residenceAddress || null,
   source: 'Wykaz podatnikow VAT (wl-api.mf.gov.pl) - free, no key',
 });
+
+const roRow = (f) => {
+  const g = f.date_generale ?? {};
+  const a = f.adresa_sediu_social ?? {};
+  return {
+    country: 'RO', name: g.denumire ?? null,
+    number: g.cui != null ? String(g.cui) : null, number_type: 'CUI',
+    company_register_number: g.nrRegCom || null,
+    status: /^INREGISTRAT/i.test(g.stare_inregistrare ?? '')
+      ? (f.stare_inactiv?.statusInactivi === true ? 'registered but declared inactive' : 'active')
+      : (g.stare_inregistrare || null),
+    legal_form: g.forma_juridica || null,
+    founded: g.data_inregistrare || null,
+    address: g.adresa
+      || join(a.sdenumire_Strada, a.snumar_Strada, a.scod_Postal, a.sdenumire_Localitate, a.sdenumire_Judet),
+    activity: g.cod_CAEN ? `CAEN ${g.cod_CAEN}` : null,
+    vat_registered: f.inregistrare_scop_Tva?.scpTVA === true,
+    source: 'ANAF (webservicesp.anaf.ro) - free, no key',
+  };
+};
+
+const siRow = (r) => ({
+  country: 'SI', name: r['Popolno ime'] ?? null,
+  number: r['Matična številka'] ?? null, number_type: 'Maticna stevilka',
+  status: null,
+  legal_form: r['Pravnoorganizacijska oblika'] ?? null,
+  address: join(r['Ulica'], r['Hišna št'], r['Hišna št  dodatek'], r['Poštna št'], r['Pošta'], r['Država']),
+  register_office: r['Registrski organ'] ?? null,
+  source: 'AJPES PRS open data (podatki.gov.si) - free, no key',
+});
+
+const skRow = (r) => {
+  const a = current(r.addresses);
+  return {
+    country: 'SK', name: current(r.fullNames)?.value ?? null,
+    number: current(r.identifiers)?.value ?? arr(r.identifiers)[0]?.value ?? null,
+    number_type: 'ICO',
+    status: r.termination ? 'ended' : 'active',
+    founded: r.establishment?.date ?? null,
+    address: a ? join(a.street, a.buildingNumber, arr(a.postalCodes)[0], a.municipality?.value) : null,
+    source: 'RPO (api.statistics.sk) - free, no key',
+  };
+};
 
 const EU_CAVEAT =
   'Every country has its own register, its own fields and its own update cadence. The ' +
@@ -809,7 +1186,7 @@ async function tEuSearch(a) {
     hits: results.length,
     per_country: Object.fromEntries(settled.map((s) => [
       s.cc,
-      s.error ? 'ERROR' : { in_register: s.total ?? 0, returned: (s.rows || []).length },
+      s.error ? 'ERROR' : { in_register: s.total ?? 'unknown', returned: (s.rows || []).length },
     ])),
     results,
     registers_unreachable: failed,
@@ -824,7 +1201,13 @@ async function tEuByNumber(a) {
   const id = String(a.number || '').trim();
   if (!cc || !id) throw new Error('country and number are both required, e.g. country="CZ", number="00177041"');
   const reg = EU_REGISTERS[cc];
-  if (!reg) throw new Error(`no free register for ${cc} — ${EU_NO_FREE_API[cc] || 'unknown country code'}`);
+  if (!reg) {
+    const vies = VIES_NAME_LOOKUP[cc]
+      ? ` If what you have is the ${VIES_NAME_LOOKUP[cc]}, vat_check returns the registered name and address for free.`
+      : '';
+    throw new Error(
+      `no free register for ${cc} — ${EU_NO_FREE_API[cc] || 'unknown country code'}.${vies}`);
+  }
   if (!reg.byNumber) {
     throw new Error(`${cc} (${reg.country_name}) does not support lookup by number in this source; use eu_company_search by name`);
   }
@@ -832,7 +1215,10 @@ async function tEuByNumber(a) {
   return {
     country: cc, register: reg.register, number: id,
     result: rows[0] ?? null,
-    note: EU_CAVEAT,
+    // Some registers hold more than one record per number — a Swiss UID covers
+    // the enterprise and its establishments. Do not drop them silently.
+    ...(rows.length > 1 ? { also_under_this_number: rows.slice(1) } : {}),
+    note: reg.note ? `${reg.note} ${EU_CAVEAT}` : EU_CAVEAT,
   };
 }
 
@@ -844,6 +1230,13 @@ async function tEuSources() {
       note: r.note ?? null,
     })),
     no_free_api: Object.entries(EU_NO_FREE_API).map(([cc, reason]) => ({ country: cc, reason })),
+    // Free number-to-name coverage that is easy to miss, because it does not
+    // come from a company register at all.
+    vies_number_to_name: Object.entries(VIES_NAME_LOOKUP).map(([cc, id]) => ({
+      country: cc, identifier: id,
+      how: `vat_check with the ${cc} VAT number`,
+      gives: 'registered name and address as the national tax authority holds them',
+    })),
     also_available: [
       'vat_check — any EU VAT number, official name and address via VIES',
       'company_search / company_detail — worldwide via GLEIF, LEI holders only',

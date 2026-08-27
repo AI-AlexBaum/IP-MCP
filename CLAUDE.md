@@ -15,7 +15,7 @@ path silently breaks.
 ## Commands
 
 ```bash
-npm run smoke              # the entire test suite (15 checks, hits live registers)
+npm run smoke              # the entire test suite (24 checks, hits live registers)
 node --check src/index.js  # syntax gate
 node src/index.js          # speaks MCP on stdin/stdout
 ```
@@ -48,7 +48,7 @@ and return real company data. Verify those by hand when you touch them.
 2. **`http()`** — every outbound call goes through it. Three retries with backoff, 90s
    timeout, throws on non-2xx. It never converts a failure into an empty result.
 3. **Source adapters**, one group per data source: TMview + EUIPO `copla` (trademarks),
-   GLEIF + VIES (companies), `EU_REGISTERS` (eight national registers), and the
+   GLEIF + VIES (companies), `EU_REGISTERS` (sixteen national registers), and the
    Company.info SOAP layer (paid, Dutch Handelsregister).
 4. **`TOOLS`** — JSON schemas — and **`HANDLERS`** — name → function.
 5. **stdio loop** — line-buffered reader plus `dispatch()`, which tracks in-flight requests
@@ -65,14 +65,31 @@ precisely to catch a tool that was written but never wired up.
 Each entry is `{ country_name, register, id, note?, byName?(query, n), byNumber?(id) }`.
 The two methods resolve to `{ total, rows }`, where `rows` comes from that country's own
 `xxRow()` mapper into the shared record shape. A country with no free register belongs in
-`EU_NO_FREE_API` with a reason — that map is part of the contract, not documentation.
+`EU_NO_FREE_API` with a reason, and one whose VAT number resolves to a name through VIES
+belongs in `VIES_NAME_LOOKUP` — both maps are part of the contract, not documentation.
+`eu_company_sources` and the `eu_company_by_number` refusal are generated from them, so a
+new country is added in one place.
+
+Set `total` to `null`, not `0`, when a source publishes no count; `per_country` then reads
+`in_register: 'unknown'` instead of claiming zero next to a non-empty `rows`.
+
+Three registers (IE, LV, SI) are CKAN datastores behind the shared `ckan()` client — a new
+CKAN country is a `CKAN` entry plus a row mapper, nothing more. Switzerland uses
+`soapPost()`, the generic hand-built-envelope transport; its status codes come from
+eCH-0108 and only the two confirmed against live records are mapped by name.
 
 ### SOAP without a dependency
 
-The Company.info layer builds its own envelope and parses replies with `xmlToObj()`, a
-~40-line XML-to-object parser, plus `arr()` to normalise the one-item-vs-many ambiguity.
-That exists to keep the zero-dependency promise; prefer extending it over adding a client
-library.
+Two sources speak doc-literal SOAP: Company.info (paid) and the Swiss UID register (free).
+Both build their own envelope and parse replies with `xmlToObj()`, a ~40-line
+XML-to-object parser that drops namespace prefixes, plus `arr()` to normalise the
+one-item-vs-many ambiguity. `soapPost()` is the shared transport: it throws a
+`<faultstring>` immediately rather than retrying it, because a fault is an answer.
+`soapCall()` (Company.info) predates it and is deliberately left alone — it is the one path
+that cannot be verified without spending money.
+
+All of this exists to keep the zero-dependency promise; prefer extending it over adding a
+client library.
 
 ## Invariants
 
@@ -98,6 +115,16 @@ line that breaks quietly — the paid tools are the canary.
 **Caps are enforced client-side.** SK and EE ignore their own limit parameters, so
 `eu_company_search` slices after the fact and `per_country` reports `in_register` alongside
 `returned`. Truncation must stay visible.
+
+**A missing field is `null`, never an invented value.** Slovenia's export has no status
+column, so Slovenian rows report `status: null`; Switzerland's eCH-0108 status has five
+undocumented codes, so those come back as `eCH-0108 code N`. Guessing a label reads as
+knowledge the register never gave. Smoke check 20 asserts the Slovenian case.
+
+**No silent bulk ingestion.** Belgium, Cyprus and the Swedish and Romanian name indexes
+exist only as bulk downloads. Loading one would make this a database that answers from a
+stale copy — the same class of failure as the 403-as-empty-result this project was built
+against. If bulk coverage is ever wanted, it belongs in a separate companion, not here.
 
 **`LIVE` decides what blocks.** Statuses outside that set are reported in their own bucket
 (`identical_but_expired`) rather than dropped, because an expired mark is useful signal.
