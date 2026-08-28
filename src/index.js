@@ -18,7 +18,7 @@
 
 const PROTOCOL = '2025-06-18';
 const NAME = 'ip-free-mcp';
-const VERSION = '1.6.0';
+const VERSION = '1.6.1';
 
 const UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
@@ -70,22 +70,45 @@ async function http(url, { body, headers } = {}, tries = 3) {
   throw new Error(`${url} unreachable after ${tries} attempts: ${last?.message || last}`);
 }
 
+/** One TMview result page. Split out so the canary probe can reuse it. */
+async function tmviewPage(query, offices, page = 1, pageSize = '100') {
+  return http('https://www.tmdn.org/tmview/api/search/results', {
+    body: JSON.stringify({
+      page: String(page), pageSize, criteria: 'C',
+      basicSearch: query, fOffices: offices, fTMStatus: [], fNiceClass: [],
+    }),
+    headers: { Origin: 'https://www.tmdn.org', Referer: 'https://www.tmdn.org/tmview/' },
+  });
+}
+
+/**
+ * A term that has hits in every register. TMview has been observed answering
+ * HTTP 200 with totalResults: 0 to every query while its search backend was down —
+ * from the outside that is indistinguishable from a free name, which is exactly the
+ * failure this project exists to refuse. One probe tells the two apart.
+ */
+const TM_CANARY = 'apple';
+
 /** Search TMview. Returns { recs: Map<ST13, record>, total }. */
 async function tmview(query, offices, maxPages = 10) {
   const recs = new Map();
   let page = 1, pages = 1, total = 0;
   while (page <= pages && page <= maxPages) {
-    const d = await http('https://www.tmdn.org/tmview/api/search/results', {
-      body: JSON.stringify({
-        page: String(page), pageSize: '100', criteria: 'C',
-        basicSearch: query, fOffices: offices, fTMStatus: [], fNiceClass: [],
-      }),
-      headers: { Origin: 'https://www.tmdn.org', Referer: 'https://www.tmdn.org/tmview/' },
-    });
+    const d = await tmviewPage(query, offices, page);
     pages = d.totalPages || 1;
     total = d.totalResults || 0;
     for (const t of d.tradeMarks || []) recs.set(t.ST13 || t.applicationNumber, t);
     page++;
+  }
+  if (total === 0 && query.trim().toLowerCase() !== TM_CANARY) {
+    const probe = await tmviewPage(TM_CANARY, offices, 1, '1');
+    if ((probe.totalResults || 0) === 0)
+      throw new Error(
+        `TMview returned nothing for "${TM_CANARY}" either, so its search index is not ` +
+        'answering and nothing was retrieved. This is a source outage, not an empty ' +
+        'register - do not read it as a free name. tm_detail is unaffected: it reads ' +
+        'EUIPO directly.',
+      );
   }
   return { recs, total };
 }
